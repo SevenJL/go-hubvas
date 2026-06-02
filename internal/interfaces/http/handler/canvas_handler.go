@@ -58,7 +58,7 @@ func (h *CanvasHandler) Get(c *gin.Context) {
 func (h *CanvasHandler) ListMine(c *gin.Context) {
 	userID := getUserID(c)
 
-	dtos, err := h.appSvc.ListByOwner(c.Request.Context(), uint64(userID))
+	dtos, err := h.appSvc.ListByOwner(c.Request.Context(), identity.UserID(userID))
 	if err != nil {
 		response.Error(c, 500, "list_failed", err.Error())
 		return

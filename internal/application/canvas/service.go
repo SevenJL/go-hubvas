@@ -55,7 +55,7 @@ func (s *CanvasApplicationService) Get(ctx context.Context, id canvasDomain.Canv
 }
 
 // ListByOwner returns all canvases owned by a user.
-func (s *CanvasApplicationService) ListByOwner(ctx context.Context, ownerID uint64) ([]*CanvasDTO, error) {
+func (s *CanvasApplicationService) ListByOwner(ctx context.Context, ownerID identity.UserID) ([]*CanvasDTO, error) {
 	canvases, err := s.canvasRepo.FindByOwner(ctx, ownerID)
 	if err != nil {
 		return nil, err

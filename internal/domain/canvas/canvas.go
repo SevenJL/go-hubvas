@@ -97,6 +97,14 @@ func (c *Canvas) ForkCanvas(newID CanvasID, userID identity.UserID, newTitle str
 	return fork, nil
 }
 
+// SetID assigns the database-generated ID after INSERT. Idempotent.
+// Only the repository layer should call this.
+func (c *Canvas) SetID(id CanvasID) {
+	if c.id == 0 {
+		c.id = id
+	}
+}
+
 // ---- Accessors ----
 
 func (c *Canvas) ID() CanvasID             { return c.id }

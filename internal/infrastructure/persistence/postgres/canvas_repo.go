@@ -2,29 +2,347 @@ package postgres
 
 import (
 	"context"
-	"database/sql"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hubvas/internal/domain/canvas"
+	"github.com/hubvas/internal/domain/identity"
+	"github.com/hubvas/internal/domain/shared"
 )
 
-// CanvasRepo implements canvas.CanvasRepository using PostgreSQL.
+// CanvasRepo implements canvas.CanvasRepository using PostgreSQL via pgx.
+//
+// Save operates within a transaction to keep the canvases row and
+// canvas_members rows consistent. Members are synced via delete-and-reinsert
+// on UPDATE — straightforward and correct for the expected cardinality
+// (tens of members per canvas).
 type CanvasRepo struct {
-	db *sql.DB
+	pool *pgxpool.Pool
 }
 
-// NewCanvasRepo creates a new CanvasRepo.
-func NewCanvasRepo(db *sql.DB) *CanvasRepo {
-	return &CanvasRepo{db: db}
+// NewCanvasRepo creates a CanvasRepo backed by the given pgx connection pool.
+func NewCanvasRepo(pool *pgxpool.Pool) *CanvasRepo {
+	return &CanvasRepo{pool: pool}
 }
 
-func (r *CanvasRepo) Save(ctx context.Context, c *canvas.Canvas) error       { return nil }
+// ---- SQL constants ----
+
+const (
+	canvasInsertSQL = `
+		INSERT INTO canvases (owner_id, title, snapshot_key, visibility, forked_from, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		RETURNING id`
+
+	canvasUpdateSQL = `
+		UPDATE canvases
+		SET owner_id = $1, title = $2, snapshot_key = $3, visibility = $4, forked_from = $5, updated_at = $6
+		WHERE id = $7`
+
+	canvasInsertMemberSQL = `
+		INSERT INTO canvas_members (canvas_id, user_id, role)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (canvas_id, user_id) DO UPDATE SET role = EXCLUDED.role`
+
+	canvasDeleteMembersSQL = `DELETE FROM canvas_members WHERE canvas_id = $1`
+
+	canvasFindByIDSQL = `
+		SELECT id, owner_id, title, snapshot_key, visibility, forked_from, created_at, updated_at
+		FROM canvases WHERE id = $1`
+
+	canvasFindByOwnerSQL = `
+		SELECT id, owner_id, title, snapshot_key, visibility, forked_from, created_at, updated_at
+		FROM canvases WHERE owner_id = $1 ORDER BY updated_at DESC`
+
+	canvasFindByMemberSQL = `
+		SELECT c.id, c.owner_id, c.title, c.snapshot_key, c.visibility, c.forked_from, c.created_at, c.updated_at
+		FROM canvases c
+		JOIN canvas_members cm ON cm.canvas_id = c.id
+		WHERE cm.user_id = $1
+		ORDER BY c.updated_at DESC`
+
+	canvasDeleteSQL = `DELETE FROM canvases WHERE id = $1`
+
+	canvasBatchMembersSQL = `
+		SELECT canvas_id, user_id, role FROM canvas_members WHERE canvas_id = ANY($1)`
+)
+
+// ---- Save ----
+
+// Save persists a Canvas and all its members in a single transaction.
+func (r *CanvasRepo) Save(ctx context.Context, c *canvas.Canvas) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if c.ID() == 0 {
+		err = r.insert(ctx, tx, c)
+	} else {
+		err = r.update(ctx, tx, c)
+	}
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+func (r *CanvasRepo) insert(ctx context.Context, tx pgx.Tx, c *canvas.Canvas) error {
+	var id int64
+	err := tx.QueryRow(ctx, canvasInsertSQL,
+		c.OwnerID(),
+		c.Title(),
+		nullIfEmpty(c.SnapshotKey().String()),
+		c.Visibility(),
+		nullCanvasID(c.ForkedFrom()),
+		c.CreatedAt(),
+		c.UpdatedAt(),
+	).Scan(&id)
+	if err != nil {
+		return mapPgError(err)
+	}
+
+	c.SetID(canvas.CanvasID(id))
+	return r.writeMembers(ctx, tx, c.ID(), c.Members())
+}
+
+func (r *CanvasRepo) update(ctx context.Context, tx pgx.Tx, c *canvas.Canvas) error {
+	now := time.Now()
+	tag, err := tx.Exec(ctx, canvasUpdateSQL,
+		c.OwnerID(),
+		c.Title(),
+		nullIfEmpty(c.SnapshotKey().String()),
+		c.Visibility(),
+		nullCanvasID(c.ForkedFrom()),
+		now,
+		c.ID(),
+	)
+	if err != nil {
+		return mapPgError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return shared.NewDomainError(shared.ErrNotFound, "canvas not found for update")
+	}
+
+	// Replace all members.
+	if _, err := tx.Exec(ctx, canvasDeleteMembersSQL, c.ID()); err != nil {
+		return err
+	}
+	return r.writeMembers(ctx, tx, c.ID(), c.Members())
+}
+
+func (r *CanvasRepo) writeMembers(ctx context.Context, tx pgx.Tx, canvasID canvas.CanvasID, members []*canvas.CanvasMember) error {
+	for _, m := range members {
+		if _, err := tx.Exec(ctx, canvasInsertMemberSQL, canvasID, m.Entity.ID, m.Role); err != nil {
+			return mapPgError(err)
+		}
+	}
+	return nil
+}
+
+// ---- FindByID ----
+
+// FindByID loads a Canvas aggregate with all its members.
 func (r *CanvasRepo) FindByID(ctx context.Context, id canvas.CanvasID) (*canvas.Canvas, error) {
-	return nil, nil
+	cr, err := r.scanOne(ctx, canvasFindByIDSQL, id)
+	if err != nil {
+		return nil, err
+	}
+	if cr == nil {
+		return nil, shared.NewDomainError(shared.ErrNotFound, "canvas not found")
+	}
+
+	memberMap, err := r.batchMembers(ctx, []canvas.CanvasID{cr.id})
+	if err != nil {
+		return nil, err
+	}
+
+	return rebuildCanvas(cr, memberMap[cr.id]), nil
 }
-func (r *CanvasRepo) FindByOwner(ctx context.Context, ownerID uint64) ([]*canvas.Canvas, error) {
-	return nil, nil
+
+// ---- FindByOwner ----
+
+// FindByOwner returns all canvases owned by the given user.
+func (r *CanvasRepo) FindByOwner(ctx context.Context, ownerID identity.UserID) ([]*canvas.Canvas, error) {
+	return r.queryMany(ctx, canvasFindByOwnerSQL, ownerID)
 }
-func (r *CanvasRepo) FindByMember(ctx context.Context, userID uint64) ([]*canvas.Canvas, error) {
-	return nil, nil
+
+// ---- FindByMember ----
+
+// FindByMember returns all canvases the given user is a member of.
+func (r *CanvasRepo) FindByMember(ctx context.Context, userID identity.UserID) ([]*canvas.Canvas, error) {
+	return r.queryMany(ctx, canvasFindByMemberSQL, userID)
 }
-func (r *CanvasRepo) Delete(ctx context.Context, id canvas.CanvasID) error  { return nil }
+
+// ---- Delete ----
+
+// Delete removes a canvas and all its members (CASCADE).
+func (r *CanvasRepo) Delete(ctx context.Context, id canvas.CanvasID) error {
+	tag, err := r.pool.Exec(ctx, canvasDeleteSQL, id)
+	if err != nil {
+		return mapPgError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return shared.NewDomainError(shared.ErrNotFound, "canvas not found for deletion")
+	}
+	return nil
+}
+
+// ---- Query helpers ----
+
+// scanOne executes a query that returns at most one canvas row.
+func (r *CanvasRepo) scanOne(ctx context.Context, query string, arg any) (*canvasRow, error) {
+	rows, err := r.pool.Query(ctx, query, arg)
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	defer rows.Close()
+
+	return scanCanvasRow(rows)
+}
+
+// queryMany executes a query and returns all matching canvases with members.
+func (r *CanvasRepo) queryMany(ctx context.Context, query string, arg any) ([]*canvas.Canvas, error) {
+	rows, err := r.pool.Query(ctx, query, arg)
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	defer rows.Close()
+
+	// Collect all canvas IDs.
+	var canvasIDs []canvas.CanvasID
+	var rows_ []*canvasRow
+	for {
+		cr, err := scanCanvasRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		if cr == nil {
+			break
+		}
+		rows_ = append(rows_, cr)
+		canvasIDs = append(canvasIDs, cr.id)
+	}
+
+	if len(rows_) == 0 {
+		return nil, nil
+	}
+
+	// Batch-load members.
+	memberMap, err := r.batchMembers(ctx, canvasIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]*canvas.Canvas, len(rows_))
+	for i, cr := range rows_ {
+		result[i] = rebuildCanvas(cr, memberMap[cr.id])
+	}
+	return result, nil
+}
+
+// ---- Member loading ----
+
+// batchMembers loads members for multiple canvas IDs in one query.
+func (r *CanvasRepo) batchMembers(ctx context.Context, ids []canvas.CanvasID) (map[canvas.CanvasID][]*canvas.CanvasMember, error) {
+	result := make(map[canvas.CanvasID][]*canvas.CanvasMember)
+	if len(ids) == 0 {
+		return result, nil
+	}
+
+	rows, err := r.pool.Query(ctx, canvasBatchMembersSQL, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cID canvas.CanvasID
+		var userID identity.UserID
+		var role canvas.Role
+		if err := rows.Scan(&cID, &userID, &role); err != nil {
+			return nil, err
+		}
+		result[cID] = append(result[cID], canvas.NewCanvasMember(cID, userID, role))
+	}
+	return result, rows.Err()
+}
+
+// ---- Internal types and helpers ----
+
+// canvasRow is an intermediate struct for scanning a single canvas row.
+type canvasRow struct {
+	id          canvas.CanvasID
+	ownerID     identity.UserID
+	title       string
+	snapshotKey canvas.SnapshotKey
+	visibility  canvas.Visibility
+	forkedFrom  *canvas.CanvasID
+	createdAt   time.Time
+	updatedAt   time.Time
+}
+
+// scanCanvasRow scans a single canvas row from the given rows. Returns nil, nil on EOF.
+func scanCanvasRow(rows pgx.Rows) (*canvasRow, error) {
+	if !rows.Next() {
+		return nil, rows.Err()
+	}
+
+	var (
+		id          int64
+		ownerID     int64
+		title       string
+		snapshotKey *string
+		visibility  int16
+		forkedFrom  *int64
+		createdAt   time.Time
+		updatedAt   time.Time
+	)
+
+	if err := rows.Scan(&id, &ownerID, &title, &snapshotKey, &visibility, &forkedFrom, &createdAt, &updatedAt); err != nil {
+		return nil, mapPgError(err)
+	}
+
+	return &canvasRow{
+		id:          canvas.CanvasID(id),
+		ownerID:     identity.UserID(ownerID),
+		title:       title,
+		snapshotKey: canvas.SnapshotKey(derefString(snapshotKey)),
+		visibility:  canvas.Visibility(visibility),
+		forkedFrom:  int64PtrToCanvasID(forkedFrom),
+		createdAt:   createdAt,
+		updatedAt:   updatedAt,
+	}, nil
+}
+
+// rebuildCanvas constructs a domain Canvas from a row and its members.
+func rebuildCanvas(cr *canvasRow, members []*canvas.CanvasMember) *canvas.Canvas {
+	if members == nil {
+		members = []*canvas.CanvasMember{}
+	}
+	return canvas.ReconstituteCanvas(
+		cr.id, cr.ownerID, cr.title, cr.snapshotKey, cr.visibility,
+		cr.forkedFrom, members, cr.createdAt, cr.updatedAt,
+	)
+}
+
+// nullCanvasID converts a *CanvasID to *int64 for pgx.
+func nullCanvasID(id *canvas.CanvasID) *int64 {
+	if id == nil {
+		return nil
+	}
+	v := int64(*id)
+	return &v
+}
+
+// int64PtrToCanvasID converts a nullable int64 to *CanvasID.
+func int64PtrToCanvasID(p *int64) *canvas.CanvasID {
+	if p == nil {
+		return nil
+	}
+	id := canvas.CanvasID(*p)
+	return &id
+}
