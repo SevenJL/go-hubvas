@@ -34,7 +34,7 @@ export function Dashboard() {
       setCanvases(prev => [c, ...prev]);
       setShowCreate(false);
       setNewTitle('');
-      navigate(`/canvas/${c.id}`);
+      navigate(`/canvas/${c.id}/edit`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to create canvas');
     }
@@ -54,7 +54,7 @@ export function Dashboard() {
     try {
       const c = await canvasService.fork(id);
       setCanvases(prev => [c, ...prev]);
-      navigate(`/canvas/${c.id}`);
+      navigate(`/canvas/${c.id}/edit`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fork');
     }
@@ -110,7 +110,7 @@ export function Dashboard() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {canvases.map(c => (
               <div key={c.id} className="card p-4 group">
-                <Link to={`/canvas/${c.id}`} className="block">
+                <Link to={`/canvas/${c.id}/edit`} className="block">
                   <h3 className="font-semibold text-gray-900 truncate mb-2">{c.title}</h3>
                   <div className="flex items-center gap-3 text-xs text-gray-500">
                     <span className="flex items-center gap-1">
