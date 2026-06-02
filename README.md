@@ -43,7 +43,7 @@ infrastructure/ →  PostgreSQL (pgx)、Redis、NATS、MinIO、JWT
 ```
 go-hubvas/
 ├── cmd/
-│   ├── api-server/main.go       # REST API (:8080)
+│   ├── api-server/main.go       # REST API (:8080) ✅ 完整注入可运行
 │   └── ws-server/main.go        # WebSocket (:8081)
 ├── internal/
 │   ├── domain/                  # 领域层
@@ -58,16 +58,17 @@ go-hubvas/
 │   │   ├── collaboration/       #   房间加入/离开/快照
 │   │   └── community/           #   浏览/点赞/评论
 │   ├── infrastructure/          # 基础设施层
-│   │   ├── persistence/postgres/#   ✅ UserRepo, CanvasRepo
-│   │   ├── persistence/redis/   #   ⏳ PresenceRepo
-│   │   ├── messaging/nats/      #   ⏳ PubSub + EventBus
-│   │   ├── storage/minio/       #   ⏳ SnapshotRepo
-│   │   └── auth/                #   ✅ JWT, bcrypt
+│   │   ├── persistence/postgres/#   ✅ UserRepo, CanvasRepo, CommunityRepo
+│   │   ├── persistence/redis/   #   ✅ PresenceRepo, LockRepository
+│   │   ├── messaging/nats/      #   ✅ PubSub (跨节点扇出) + EventBus
+│   │   ├── storage/minio/       #   ✅ SnapshotRepo (S3)
+│   │   └── auth/                #   ✅ JWT, bcrypt, PermissionService
 │   └── interfaces/              # 接口层
 │       ├── http/                #   路由 + 中间件 + Handler
 │       └── ws/                  #   Hub/Room/Client/Gateway
 ├── pkg/
 │   ├── config/                  # 配置结构体
+│   ├── idgen/                   # Snowflake ID 生成器
 │   └── logger/                  # 结构化日志
 ├── configs/config.yaml          # 默认配置
 ├── deployments/docker/          # Dockerfile
@@ -174,18 +175,23 @@ make docker-up
 
 | 阶段 | 内容 | 状态 |
 |------|------|------|
-| M1 | 项目骨架、DDD 分层 | ✅ 完成 |
-| M1 | User 聚合 + JWT + bcrypt | ✅ 完成 |
-| M1 | Canvas 聚合 + CRUD | ✅ 完成 |
-| M2 | WebSocket Hub/Room/Client | ✅ 骨架完成 |
-| M2 | pgx UserRepo | ✅ 完成 |
-| M2 | pgx CanvasRepo | ✅ 完成 |
-| M2 | pgx CommunityRepo | ⏳ 待实现 |
-| M2 | Redis PresenceRepo | ⏳ 待实现 |
-| M2 | MinIO SnapshotRepo | ⏳ 待实现 |
-| M3 | NATS PubSub 跨节点扇出 | ⏳ 待实现 |
-| M4 | 社区功能对接 | ⏳ 待实现 |
-| M5 | 导出、限流、监控 | ⏳ 待实现 |
+| M1 | 项目骨架、DDD 分层 | ✅ |
+| M1 | User 聚合 + JWT + bcrypt | ✅ |
+| M1 | Canvas 聚合 + CRUD | ✅ |
+| M2 | WebSocket Hub/Room/Client | ✅ |
+| M2 | PostgreSQL UserRepo | ✅ |
+| M2 | PostgreSQL CanvasRepo | ✅ |
+| M2 | PostgreSQL CommunityRepo | ✅ |
+| M2 | Redis PresenceRepo + LockRepository | ✅ |
+| M2 | MinIO SnapshotRepo (S3) | ✅ |
+| M2 | NATS PubSub 跨节点扇出 | ✅ |
+| M2 | Snowflake ID 生成器 | ✅ |
+| M2 | PermissionService | ✅ |
+| M2 | `api-server` 完整依赖注入（可运行） | ✅ |
+| M3 | `ws-server` 完整依赖注入 | ⏳ |
+| M3 | Yjs CRDT 中继集成 | ⏳ |
+| M4 | 前端 React + tldraw | ⏳ |
+| M5 | 导出、限流、监控 | ⏳ |
 
 ## 开发指南
 
