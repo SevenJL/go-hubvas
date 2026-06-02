@@ -4,8 +4,8 @@ import "time"
 
 // PublishedCanvasDTO is the public representation of a published canvas.
 type PublishedCanvasDTO struct {
-	CanvasID     int64    `json:"canvas_id"`
-	AuthorID     int64    `json:"author_id"`
+	CanvasID     int64    `json:"canvas_id,string"`
+	AuthorID     int64    `json:"author_id,string"`
 	AuthorName   string   `json:"author_name"`
 	Title        string   `json:"title"`
 	SnapshotURL  string   `json:"snapshot_url"`
@@ -18,9 +18,9 @@ type PublishedCanvasDTO struct {
 
 // CommentDTO is the public representation of a comment.
 type CommentDTO struct {
-	ID         int64  `json:"id"`
-	CanvasID   int64  `json:"canvas_id"`
-	AuthorID   int64  `json:"author_id"`
+	ID         int64  `json:"id,string"`
+	CanvasID   int64  `json:"canvas_id,string"`
+	AuthorID   int64  `json:"author_id,string"`
 	AuthorName string `json:"author_name"`
 	Content    string `json:"content"`
 	CreatedAt  int64  `json:"created_at"`

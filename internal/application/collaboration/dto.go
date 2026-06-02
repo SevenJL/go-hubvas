@@ -4,14 +4,14 @@ import "github.com/hubvas/internal/domain/collaboration"
 
 // RoomInfoDTO is lightweight info about an active room.
 type RoomInfoDTO struct {
-	RoomID      int64  `json:"room_id"`
+	RoomID      int64  `json:"room_id,string"`
 	MemberCount int    `json:"member_count"`
 	Status      string `json:"status"`
 }
 
 // PresenceDTO represents a single member's presence in a room.
 type PresenceDTO struct {
-	UserID     int64   `json:"user_id"`
+	UserID     int64   `json:"user_id,string"`
 	Username   string  `json:"username"`
 	AvatarURL  string  `json:"avatar_url,omitempty"`
 	Role       string  `json:"role"`

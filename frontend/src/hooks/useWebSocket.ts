@@ -3,7 +3,7 @@ import { getAccessToken } from '../services/api';
 import type { WSMessage } from '../types';
 
 interface UseWebSocketOptions {
-  canvasId: number;
+  canvasId: string;
   onMessage?: (msg: WSMessage) => void;
   onPresence?: (members: import('../types').PresenceMember[]) => void;
   onError?: (error: string) => void;

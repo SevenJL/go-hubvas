@@ -11,7 +11,7 @@ export function CanvasDetail() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
   const navigate = useNavigate();
-  const canvasId = Number(id);
+  const canvasId = id!;
   const [canvas, setCanvas] = useState<CanvasInfo | null>(null);
   const [comments, setComments] = useState<CommentInfo[]>([]);
   const [newComment, setNewComment] = useState('');

@@ -67,6 +67,7 @@ func main() {
 
 	canvasAppSvc := appCanvas.NewCanvasApplicationService(
 		canvasRepo,
+		communityRepo,
 		&snowflakeIDAdapter{sf: idGen},
 	)
 

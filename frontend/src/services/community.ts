@@ -21,24 +21,24 @@ export const communityService = {
     return res.data;
   },
 
-  async like(canvasId: number): Promise<void> {
+  async like(canvasId: string): Promise<void> {
     const res = await api.post<void>(`/canvases/${canvasId}/like`);
     if (res.code !== 0) throw new Error(res.message);
   },
 
-  async unlike(canvasId: number): Promise<void> {
+  async unlike(canvasId: string): Promise<void> {
     const res = await api.delete<void>(`/canvases/${canvasId}/like`);
     if (res.code !== 0) throw new Error(res.message);
   },
 
-  async postComment(canvasId: number, content: string): Promise<CommentInfo> {
+  async postComment(canvasId: string, content: string): Promise<CommentInfo> {
     const res = await api.post<CommentInfo>(`/canvases/${canvasId}/comments`, { content });
     if (res.code !== 0 || !res.data) throw new Error(res.message);
     return res.data;
   },
 
   async getComments(
-    canvasId: number,
+    canvasId: string,
     page = 1,
     pageSize = 20,
   ): Promise<{ items: CommentInfo[]; total: number }> {

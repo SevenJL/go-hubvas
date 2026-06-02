@@ -8,7 +8,7 @@ export const canvasService = {
     return res.data;
   },
 
-  async get(id: number): Promise<CanvasInfo> {
+  async get(id: string): Promise<CanvasInfo> {
     const res = await api.get<CanvasInfo>(`/canvases/${id}`);
     if (res.code !== 0 || !res.data) throw new Error(res.message);
     return res.data;
@@ -20,18 +20,18 @@ export const canvasService = {
     return res.data;
   },
 
-  async publish(id: number): Promise<void> {
+  async publish(id: string): Promise<void> {
     const res = await api.post<void>(`/canvases/${id}/publish`);
     if (res.code !== 0) throw new Error(res.message);
   },
 
-  async fork(id: number): Promise<CanvasInfo> {
+  async fork(id: string): Promise<CanvasInfo> {
     const res = await api.post<CanvasInfo>(`/canvases/${id}/fork`);
     if (res.code !== 0 || !res.data) throw new Error(res.message);
     return res.data;
   },
 
-  async delete(id: number): Promise<void> {
+  async delete(id: string): Promise<void> {
     const res = await api.delete<void>(`/canvases/${id}`);
     if (res.code !== 0) throw new Error(res.message);
   },

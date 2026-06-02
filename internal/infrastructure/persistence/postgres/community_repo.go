@@ -449,19 +449,19 @@ func (r *CommunityRepo) scanPublished(ctx context.Context, query string, arg any
 	}
 	defer rows.Close()
 
+	if !rows.Next() {
+		return nil, shared.NewDomainError(shared.ErrNotFound, "published canvas not found")
+	}
 	return scanPublishedRow(rows)
 }
 
+// scanPublishedRow scans the current row (the caller must have advanced the cursor via rows.Next()).
 func scanPublishedRow(rows pgx.Rows) (*communityDomain.PublishedCanvas, error) {
-	if !rows.Next() {
-		return nil, rows.Err()
-	}
-
 	var (
-		canvasID, authorID         int64
-		title, snapshotURL         *string
+		canvasID, authorID                 int64
+		title, snapshotURL                 *string
 		likeCount, commentCount, forkCount int64
-		publishedAt                time.Time
+		publishedAt                        time.Time
 	)
 
 	if err := rows.Scan(&canvasID, &authorID, &title, &snapshotURL, &likeCount, &commentCount, &forkCount, &publishedAt); err != nil {

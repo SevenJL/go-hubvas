@@ -7,7 +7,7 @@ export interface ApiResponse<T> {
 
 // ---- Auth ----
 export interface User {
-  id: number;
+  id: string;
   username: string;
   email: string;
   avatar_url: string;
@@ -23,11 +23,11 @@ export interface TokenResponse {
 
 // ---- Canvas ----
 export interface CanvasInfo {
-  id: number;
-  owner_id: number;
+  id: string;
+  owner_id: string;
   title: string;
   visibility: 'private' | 'published';
-  forked_from?: number;
+  forked_from?: string;
   member_count: number;
   online_count: number;
   created_at: string;
@@ -35,15 +35,15 @@ export interface CanvasInfo {
 }
 
 export interface CanvasMember {
-  user_id: number;
+  user_id: string;
   username: string;
   role: 'owner' | 'editor' | 'viewer' | 'commenter';
 }
 
 // ---- Community ----
 export interface PublishedCanvas {
-  canvas_id: number;
-  author_id: number;
+  canvas_id: string;
+  author_id: string;
   author_name: string;
   title: string;
   snapshot_url: string;
@@ -55,9 +55,9 @@ export interface PublishedCanvas {
 }
 
 export interface CommentInfo {
-  id: number;
-  canvas_id: number;
-  author_id: number;
+  id: string;
+  canvas_id: string;
+  author_id: string;
   author_name: string;
   content: string;
   created_at: number;
@@ -80,7 +80,7 @@ export interface WSMessage {
 }
 
 export interface PresenceMember {
-  user_id: number;
+  user_id: string;
   username: string;
   avatar_url: string;
   role: string;
@@ -103,7 +103,7 @@ export interface AwarenessPayload {
 
 // ---- Presence ----
 export interface RoomPresence {
-  user_id: number;
+  user_id: string;
   username: string;
   avatar_url: string;
   role: string;

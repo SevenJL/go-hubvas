@@ -4,6 +4,7 @@ import (
 	"context"
 
 	canvasDomain "github.com/hubvas/internal/domain/canvas"
+	communityDomain "github.com/hubvas/internal/domain/community"
 	"github.com/hubvas/internal/domain/identity"
 	"github.com/hubvas/internal/domain/shared"
 )
@@ -16,18 +17,21 @@ type IDGenerator interface {
 
 // CanvasApplicationService orchestrates canvas-related use cases.
 type CanvasApplicationService struct {
-	canvasRepo canvasDomain.CanvasRepository
-	idGen      IDGenerator
+	canvasRepo    canvasDomain.CanvasRepository
+	communityRepo communityDomain.CommunityRepository
+	idGen         IDGenerator
 }
 
 // NewCanvasApplicationService creates the application service.
 func NewCanvasApplicationService(
 	canvasRepo canvasDomain.CanvasRepository,
+	communityRepo communityDomain.CommunityRepository,
 	idGen IDGenerator,
 ) *CanvasApplicationService {
 	return &CanvasApplicationService{
-		canvasRepo: canvasRepo,
-		idGen:      idGen,
+		canvasRepo:    canvasRepo,
+		communityRepo: communityRepo,
+		idGen:         idGen,
 	}
 }
 
@@ -101,7 +105,19 @@ func (s *CanvasApplicationService) Publish(ctx context.Context, canvasID canvasD
 	if err := c.Publish(); err != nil {
 		return err
 	}
-	return s.canvasRepo.Save(ctx, c)
+	if err := s.canvasRepo.Save(ctx, c); err != nil {
+		return err
+	}
+
+	// Also create/update the community read-side projection.
+	published := communityDomain.NewPublishedCanvas(
+		c.ID(),
+		c.OwnerID(),
+		c.Title(),
+		"", // snapshotURL — populated later when snapshot is available
+		nil,
+	)
+	return s.communityRepo.SavePublished(ctx, published)
 }
 
 // Fork creates a fork of the source canvas.

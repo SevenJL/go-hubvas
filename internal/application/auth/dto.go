@@ -25,7 +25,7 @@ type TokenResponse struct {
 
 // UserDTO is the public representation of a user.
 type UserDTO struct {
-	ID        int64     `json:"id"`
+	ID        int64     `json:"id,string"`
 	Username  string    `json:"username"`
 	Email     string    `json:"email"`
 	AvatarURL string    `json:"avatar_url,omitempty"`

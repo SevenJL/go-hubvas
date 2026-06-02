@@ -40,7 +40,7 @@ export function Dashboard() {
     }
   };
 
-  const handleDelete = async (id: number) => {
+  const handleDelete = async (id: string) => {
     if (!confirm('Delete this canvas?')) return;
     try {
       await canvasService.delete(id);
@@ -50,7 +50,7 @@ export function Dashboard() {
     }
   };
 
-  const handleFork = async (id: number) => {
+  const handleFork = async (id: string) => {
     try {
       const c = await canvasService.fork(id);
       setCanvases(prev => [c, ...prev]);

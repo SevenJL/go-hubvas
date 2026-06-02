@@ -10,10 +10,10 @@ import { ArrowLeft, Users } from 'lucide-react';
 export function Editor() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
-  const canvasId = Number(id);
+  const canvasId = id!;
   const [canvas, setCanvas] = useState<CanvasInfo | null>(null);
   const [onlineUsers, setOnlineUsers] = useState<PresenceMember[]>([]);
-  const [cursors, setCursors] = useState<Map<number, { x: number; y: number; username: string }>>(new Map());
+  const [cursors, setCursors] = useState<Map<string, { x: number; y: number; username: string }>>(new Map());
   const [error, setError] = useState('');
 
   // Load canvas metadata.
@@ -32,7 +32,7 @@ export function Editor() {
         if (payload?.cursor) {
           setCursors(prev => {
             const next = new Map(prev);
-            next.set(/* userId from context */ 0, {
+            next.set('0', {
               x: payload.cursor!.x,
               y: payload.cursor!.y,
               username: 'User',
