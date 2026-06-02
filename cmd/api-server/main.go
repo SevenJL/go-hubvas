@@ -12,11 +12,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"syscall"
+
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/hubvas/pkg/config"
 )
@@ -31,27 +34,58 @@ func main() {
 			APIHost: "0.0.0.0",
 			APIPort: 8080,
 		},
+		Database: config.DatabaseConfig{
+			Host:     "localhost",
+			Port:     5432,
+			User:     "hubvas",
+			Password: "",
+			DBName:   "hubvas",
+			SSLMode:  "disable",
+			MaxConns: 20,
+		},
 	}
 
-	// TODO: Wire up dependencies using Google Wire or manual DI.
-	// For the skeleton, we just demonstrate the startup sequence.
-	//
-	// Infrastructure:
-	//   db, _   := sql.Open("postgres", cfg.Database.DSN())
-	//   userRepo  := postgres.NewUserRepo(db)
-	//   canvasRepo := postgres.NewCanvasRepo(db)
-	//
-	// Domain services:
-	//   jwtSvc   := auth.NewJWTService(cfg.Auth.AccessSecret, cfg.Auth.RefreshSecret, ...)
-	//   pwdSvc   := auth.NewBcryptPasswordService(cfg.Auth.BcryptCost)
-	//
-	// Application services:
-	//   authAppSvc := authApp.NewAuthApplicationService(userRepo, jwtSvc, pwdSvc)
-	//
-	// HTTP layer:
-	//   authHandler := handler.NewAuthHandler(authAppSvc)
-	//   router := http.NewRouter(...)
-	//   router.Run(fmt.Sprintf("%s:%d", cfg.Server.APIHost, cfg.Server.APIPort))
+	// ---- Wiring (manual DI — replace with Wire once all repos are implemented) ----
+
+	// 1. Infrastructure: Database connection pool.
+	pool, err := pgxpool.New(context.Background(), cfg.Database.DSN())
+	if err != nil {
+		log.Fatalf("failed to connect to database: %v", err)
+	}
+	defer pool.Close()
+	log.Println("Connected to PostgreSQL")
+
+	// 2. Infrastructure: Repositories (more coming as they are implemented).
+	// userRepo    := postgres.NewUserRepo(pool)
+	// canvasRepo  := postgres.NewCanvasRepo(...)
+	// communityRepo := postgres.NewCommunityRepo(...)
+
+	// 3. Infrastructure: Services.
+	// jwtSvc := infAuth.NewJWTService(
+	//     cfg.Auth.AccessSecret, cfg.Auth.RefreshSecret,
+	//     cfg.Auth.AccessTokenTTL, cfg.Auth.RefreshTokenTTL,
+	// )
+	// pwdSvc := infAuth.NewBcryptPasswordService(cfg.Auth.BcryptCost)
+
+	// 4. Application: Use-case orchestrators.
+	// authAppSvc := authApp.NewAuthApplicationService(userRepo, jwtSvc, pwdSvc)
+	// canvasAppSvc := canvasApp.NewCanvasApplicationService(canvasRepo, idGen)
+	// communityAppSvc := communityApp.NewCommunityApplicationService(communityRepo, canvasRepo, idGen)
+
+	// 5. Interfaces: HTTP handlers.
+	// authHandler      := handler.NewAuthHandler(authAppSvc)
+	// canvasHandler    := handler.NewCanvasHandler(canvasAppSvc)
+	// communityHandler := handler.NewCommunityHandler(communityAppSvc)
+
+	// 6. HTTP Router.
+	// router := httpd.NewRouter(httpd.RouterConfig{
+	//     AuthHandler:      authHandler,
+	//     CanvasHandler:    canvasHandler,
+	//     CommunityHandler: communityHandler,
+	//     TokenSvc:         jwtSvc,
+	//     RateLimiter:      middleware.NewRateLimiter(100, 200),
+	// })
+	// router.Run(fmt.Sprintf("%s:%d", cfg.Server.APIHost, cfg.Server.APIPort))
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.APIHost, cfg.Server.APIPort)
 	log.Printf("API server would listen on %s (skeleton — dependencies not wired)", addr)
@@ -61,4 +95,6 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	sig := <-quit
 	log.Printf("Received signal %v, shutting down...", sig)
+
+	_ = pool
 }

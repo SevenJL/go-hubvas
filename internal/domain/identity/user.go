@@ -70,6 +70,15 @@ func ReconstituteUser(id UserID, username, email, passwordHash, avatarURL string
 	}
 }
 
+// SetID assigns the database-generated ID after INSERT.
+// It is idempotent: once set, subsequent calls have no effect.
+// Only the repository layer should call this.
+func (u *User) SetID(id UserID) {
+	if u.id == 0 {
+		u.id = id
+	}
+}
+
 // ---- Accessors ----
 
 func (u *User) ID() UserID            { return u.id }
