@@ -43,6 +43,14 @@ func ReconstituteComment(id CommentID, canvasID canvas.CanvasID, authorID identi
 	}
 }
 
+// SetID assigns the database-generated ID after INSERT. Idempotent.
+// Only the repository layer should call this.
+func (c *Comment) SetID(id CommentID) {
+	if c.id == 0 {
+		c.id = id
+	}
+}
+
 // ---- Accessors ----
 
 func (c *Comment) ID() CommentID           { return c.id }
