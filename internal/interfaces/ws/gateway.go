@@ -1,0 +1,114 @@
+package ws
+
+import (
+	"log"
+	"net/http"
+	"strconv"
+
+	"github.com/coder/websocket"
+	"github.com/hubvas/internal/domain/canvas"
+	"github.com/hubvas/internal/domain/collaboration"
+	"github.com/hubvas/internal/domain/identity"
+)
+
+// Gateway handles WebSocket upgrade requests and creates Client instances.
+//
+// Connection URL: wss://host/ws?canvas=<canvasID>&token=<jwt>
+//
+// Flow:
+//  1. Upgrade HTTP to WebSocket
+//  2. Validate JWT token → extract userID
+//  3. Validate canvas access permission
+//  4. Create Client and register with the Hub
+type Gateway struct {
+	hub            *Hub
+	tokenSvc       TokenValidator
+	permissionSvc  collaboration.PermissionService
+}
+
+// TokenValidator is the minimal interface for JWT validation.
+// It is satisfied by infrastructure/auth.JWTService.
+type TokenValidator interface {
+	ValidateAccessToken(tokenString string) (identity.UserID, error)
+}
+
+// NewGateway creates a WebSocket gateway.
+func NewGateway(
+	hub *Hub,
+	tokenSvc TokenValidator,
+	permissionSvc collaboration.PermissionService,
+) *Gateway {
+	return &Gateway{
+		hub:           hub,
+		tokenSvc:      tokenSvc,
+		permissionSvc: permissionSvc,
+	}
+}
+
+// ServeHTTP handles the WebSocket upgrade request.
+// It implements http.Handler so it can be mounted directly on a route.
+func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// 1. Extract canvas ID from query.
+	canvasIDStr := r.URL.Query().Get("canvas")
+	if canvasIDStr == "" {
+		http.Error(w, `{"code":"missing_canvas","message":"canvas ID is required"}`, http.StatusBadRequest)
+		return
+	}
+	canvasID, err := strconv.ParseInt(canvasIDStr, 10, 64)
+	if err != nil {
+		http.Error(w, `{"code":"invalid_canvas","message":"canvas ID must be a number"}`, http.StatusBadRequest)
+		return
+	}
+
+	// 2. Extract and validate JWT.
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		// Also check Authorization header.
+		if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
+			token = auth[7:]
+		}
+	}
+	if token == "" {
+		http.Error(w, `{"code":"missing_token","message":"token is required"}`, http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := g.tokenSvc.ValidateAccessToken(token)
+	if err != nil {
+		http.Error(w, `{"code":"invalid_token","message":"invalid or expired token"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// 3. Validate canvas access.
+	canView, err := g.permissionSvc.CanView(r.Context(), canvas.CanvasID(canvasID), userID)
+	if err != nil || !canView {
+		http.Error(w, `{"code":"forbidden","message":"access denied"}`, http.StatusForbidden)
+		return
+	}
+
+	// 4. Upgrade to WebSocket.
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		InsecureSkipVerify: false,
+	})
+	if err != nil {
+		log.Printf("[ws] upgrade failed: %v", err)
+		return
+	}
+
+	// 5. Create Client.
+	// The username is fetched from the token or a separate call;
+	// for now we use the userID as a placeholder.
+	client := NewClient(
+		conn,
+		userID,
+		strconv.FormatInt(int64(userID), 10), // placeholder username
+		collaboration.RoomID(canvasID),
+		g.hub,
+		nil, // onRead will be wired by Room.Register
+	)
+
+	// 6. Register with the Hub (which routes to the correct Room).
+	g.hub.RegisterClient(client)
+
+	log.Printf("[ws] connection established: user=%d canvas=%d", userID, canvasID)
+}

@@ -1,0 +1,51 @@
+# Hubvas Configuration — Default Values
+# Override with environment variables in production.
+
+server:
+  api_host: "0.0.0.0"
+  api_port: 8080
+  ws_host: "0.0.0.0"
+  ws_port: 8081
+  read_timeout: 30s
+  write_timeout: 30s
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "hubvas"
+  password: ""
+  dbname: "hubvas"
+  sslmode: "disable"
+  max_conns: 20
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+  pool_size: 10
+
+nats:
+  url: "nats://localhost:4222"
+  token: ""
+
+storage:
+  endpoint: "localhost:9000"
+  access_key: "minioadmin"
+  secret_key: "minioadmin"
+  bucket: "hubvas-snapshots"
+  use_ssl: false
+
+auth:
+  access_token_ttl: 15m
+  refresh_token_ttl: 720h  # 30 days
+  access_secret: ""
+  refresh_secret: ""
+  bcrypt_cost: 12
+
+ws:
+  idle_timeout: 5m
+  gc_interval: 1m
+  snapshot_interval: 30s
+  max_message_size: 524288    # 512 KB
+  send_buffer_size: 256
+  inbound_queue_size: 1024
