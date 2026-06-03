@@ -4,26 +4,17 @@ import { getAccessToken } from '../services/api';
 
 const BASE_URL = '/api';
 
-/**
- * useTldrawSync provides save/load persistence for tldraw stores
- * via the REST API (PUT/GET /api/canvases/:id/snapshot).
- *
- * Key behaviors:
- *   - On mount: load saved snapshot FIRST, then enable saving.
- *   - On draw: debounce-save 1 second after the last change.
- *   - On unload: save immediately (covers page close/refresh).
- */
-
 interface UseTldrawSyncOptions {
   canvasId: string;
+  /** Called after a successful save with the JSON snapshot — use this to broadcast to peers. */
+  onSnapshotSaved?: (snapshot: unknown) => void;
 }
 
-export function useTldrawSync({ canvasId }: UseTldrawSyncOptions) {
+export function useTldrawSync({ canvasId, onSnapshotSaved }: UseTldrawSyncOptions) {
   const editorRef = useRef<Editor | null>(null);
-  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const lastSaved = useRef<string>('');
   const loaded = useRef(false);
-  // Store the cleanup function returned by onMount so we can call it later.
   const cleanupRef = useRef<(() => void) | null>(null);
 
   const save = useCallback(async () => {
@@ -48,10 +39,28 @@ export function useTldrawSync({ canvasId }: UseTldrawSyncOptions) {
         },
         body: json,
       });
+
+      // Notify peers via the callback (Editor wires this to WebSocket).
+      onSnapshotSaved?.(JSON.parse(json));
     } catch {
       // Silently retry on next change.
     }
-  }, [canvasId]);
+  }, [canvasId, onSnapshotSaved]);
+
+  /** Apply a remote snapshot received from a peer via WebSocket. */
+  const applyRemoteSnapshot = useCallback((snapshot: unknown) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    try {
+      editor.store.mergeRemoteChanges(() => {
+        editor.store.loadStoreSnapshot(snapshot as Parameters<typeof editor.store.loadStoreSnapshot>[0]);
+      });
+      lastSaved.current = JSON.stringify(snapshot);
+    } catch {
+      // Skip malformed snapshots.
+    }
+  }, []);
 
   const load = useCallback(async () => {
     const editor = editorRef.current;
@@ -70,8 +79,6 @@ export function useTldrawSync({ canvasId }: UseTldrawSyncOptions) {
       const body = await res.json();
 
       if (body.code === 0 && body.data) {
-        // Use mergeRemoteChanges so applying the snapshot doesn't trigger
-        // the store.listen callback (avoids unnecessary save after load).
         editor.store.mergeRemoteChanges(() => {
           editor.store.loadStoreSnapshot(body.data);
         });
@@ -89,9 +96,7 @@ export function useTldrawSync({ canvasId }: UseTldrawSyncOptions) {
       editorRef.current = editor;
       loaded.current = false;
 
-      // 1. Load saved snapshot first (prevents empty-overwrite race).
       load().then(() => {
-        // 2. Only AFTER load completes, start listening for changes.
         const unlisten = editor.store.listen(
           () => {
             if (saveTimer.current) clearTimeout(saveTimer.current);
@@ -124,5 +129,5 @@ export function useTldrawSync({ canvasId }: UseTldrawSyncOptions) {
     };
   }, []);
 
-  return { onMount, save, load };
+  return { onMount, save, load, applyRemoteSnapshot };
 }

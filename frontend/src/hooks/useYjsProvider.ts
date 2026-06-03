@@ -2,36 +2,24 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 import * as Y from 'yjs';
 import type { WSMessage, PresenceMember } from '../types';
 
-/**
- * Custom Yjs provider that syncs a Y.Doc over our application WebSocket
- * instead of the y-websocket protocol.
- *
- * Architecture:
- *   - Y.Doc 'update' events → binary frames sent over WebSocket
- *   - Binary frames from WebSocket → Y.applyUpdate(doc, ...)
- *   - Awareness state synced via JSON awareness messages
- */
-
 interface UseYjsProviderOptions {
   canvasId: string;
   token: string;
   username: string;
   userId: string;
+  /** Called when a remote sync message is received (JSON text frame with type="sync"). */
+  onSyncMessage?: (payload: unknown) => void;
 }
 
 interface UseYjsProviderResult {
-  /** The shared Yjs document */
   doc: Y.Doc;
-  /** Whether the WebSocket is connected */
   connected: boolean;
-  /** Remote awareness states (cursors, selections) */
   awareness: Map<number, { x: number; y: number; username: string; color: string }>;
-  /** Remote user presence list */
   onlineUsers: PresenceMember[];
-  /** Send a sync update (called automatically, but exposed for testing) */
   sendSync: (update: Uint8Array) => void;
-  /** Send awareness update */
   sendAwareness: (cursor: { x: number; y: number } | null, selection?: unknown) => void;
+  /** Send a JSON text message (type + payload) over the WebSocket. */
+  sendTextMessage: (type: string, payload: unknown) => void;
 }
 
 const RECONNECT_BASE_MS = 1000;
@@ -42,18 +30,27 @@ export function useYjsProvider({
   token,
   username,
   userId,
+  onSyncMessage,
 }: UseYjsProviderOptions): UseYjsProviderResult {
   const docRef = useRef<Y.Doc>(new Y.Doc());
   const wsRef = useRef<WebSocket | null>(null);
   const seqRef = useRef(0);
   const reconnectAttempt = useRef(0);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
+  const onSyncMessageRef = useRef(onSyncMessage);
+  onSyncMessageRef.current = onSyncMessage;
 
   const [connected, setConnected] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<PresenceMember[]>([]);
   const [awareness, setAwareness] = useState<
     Map<number, { x: number; y: number; username: string; color: string }>
   >(new Map());
+
+  const sendTextMessage = useCallback((type: string, payload: unknown) => {
+    const ws = wsRef.current;
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ type, seq: ++seqRef.current, payload }));
+  }, []);
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -67,43 +64,26 @@ export function useYjsProvider({
     ws.onopen = () => {
       setConnected(true);
       reconnectAttempt.current = 0;
-
-      // Send initial presence.
-      ws.send(JSON.stringify({
-        type: 'presence',
-        seq: ++seqRef.current,
-        payload: { user_id: userId, username },
-      }));
+      sendTextMessage('presence', { user_id: userId, username });
     };
 
     ws.onmessage = (event) => {
-      // Handle binary frames (CRDT updates)
+      // Binary frames — Yjs CRDT updates.
       if (event.data instanceof ArrayBuffer) {
         try {
-          const update = new Uint8Array(event.data);
-          Y.applyUpdate(docRef.current, update);
-        } catch {
-          // Skip malformed binary frames
-        }
+          Y.applyUpdate(docRef.current, new Uint8Array(event.data));
+        } catch { /* skip */ }
         return;
       }
 
-      // Handle text messages (JSON)
+      // Text frames — JSON protocol.
       try {
         const msg: WSMessage = JSON.parse(event.data);
 
         switch (msg.type) {
           case 'sync': {
-            // Server-relayed CRDT update — may be base64-encoded or raw.
-            const payload = msg.payload as { update?: string } | undefined;
-            if (payload?.update) {
-              try {
-                const binary = Uint8Array.from(atob(payload.update), c => c.charCodeAt(0));
-                Y.applyUpdate(docRef.current, binary);
-              } catch {
-                // Skip malformed updates
-              }
-            }
+            // Text-based sync message (tldraw JSON snapshot).
+            onSyncMessageRef.current?.(msg.payload);
             break;
           }
 
@@ -130,44 +110,28 @@ export function useYjsProvider({
 
           case 'presence': {
             const p = msg.payload as { online?: PresenceMember[] } | undefined;
-            if (p?.online) {
-              setOnlineUsers(p.online);
-            }
+            if (p?.online) setOnlineUsers(p.online);
             break;
           }
 
           case 'error': {
             const p = msg.payload as { message?: string } | undefined;
-            if (p?.message) {
-              console.warn('[yjs] server error:', p.message);
-            }
+            if (p?.message) console.warn('[ws] server error:', p.message);
             break;
           }
-
-          case 'ack':
-            // Server acknowledged our message — nothing to do.
-            break;
         }
-      } catch {
-        // Skip malformed JSON messages
-      }
+      } catch { /* skip */ }
     };
 
     ws.onclose = () => {
       setConnected(false);
       wsRef.current = null;
-
       const delay = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttempt.current, RECONNECT_MAX_MS);
       reconnectAttempt.current++;
       reconnectTimer.current = setTimeout(connect, delay);
     };
+  }, [canvasId, token, userId, username, sendTextMessage]);
 
-    ws.onerror = () => {
-      // onclose will fire next; reconnect logic is there.
-    };
-  }, [canvasId, token, userId, username]);
-
-  // Connect on mount, disconnect on unmount.
   useEffect(() => {
     connect();
     return () => {
@@ -176,47 +140,30 @@ export function useYjsProvider({
     };
   }, [connect]);
 
-  // Listen for local Y.Doc updates and send them over WebSocket.
+  // Yjs doc → binary WebSocket frames.
   useEffect(() => {
     const doc = docRef.current;
     const handler = (update: Uint8Array, origin: unknown) => {
-      // Skip updates originating from remote (to avoid echo loops).
       if (origin === 'remote') return;
-
-      const ws = wsRef.current;
-      if (ws?.readyState === WebSocket.OPEN) {
-        // Send as binary frame for efficiency.
-        ws.send(update.buffer);
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(update.buffer);
       }
     };
-
     doc.on('update', handler);
-    return () => {
-      doc.off('update', handler);
-    };
+    return () => { doc.off('update', handler); };
   }, []);
 
   const sendSync = useCallback((update: Uint8Array) => {
-    const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) {
-      ws.send(update.buffer);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(update.buffer);
     }
   }, []);
 
   const sendAwareness = useCallback(
     (cursor: { x: number; y: number } | null, selection?: unknown) => {
-      const ws = wsRef.current;
-      if (ws?.readyState !== WebSocket.OPEN) return;
-
-      ws.send(
-        JSON.stringify({
-          type: 'awareness',
-          seq: ++seqRef.current,
-          payload: { cursor, selection, user_id: userId, username },
-        }),
-      );
+      sendTextMessage('awareness', { cursor, selection, user_id: userId, username });
     },
-    [userId, username],
+    [userId, username, sendTextMessage],
   );
 
   return {
@@ -226,10 +173,10 @@ export function useYjsProvider({
     onlineUsers,
     sendSync,
     sendAwareness,
+    sendTextMessage,
   };
 }
 
-/** Generate a consistent color from a string (for cursor colors). */
 function stringToColor(str: string): string {
   let hash = 0;
   for (let i = 0; i < str.length; i++) {

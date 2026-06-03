@@ -71,7 +71,6 @@ func (r *Room) processLoop() {
 }
 
 // processOp validates, applies, and broadcasts a single operation.
-// Sync ops are broadcast as binary frames; all others as JSON text.
 func (r *Room) processOp(op collaboration.Operation) {
 	result, err := r.domainRoom.ProcessOp(op)
 	if err != nil {
@@ -81,13 +80,26 @@ func (r *Room) processOp(op collaboration.Operation) {
 	}
 
 	if result == nil {
-		return // No broadcast needed
+		return
 	}
 
-	// For sync operations, broadcast the raw binary payload directly.
-	// For all other operations, marshal to JSON first.
+	// Sync operations received as binary frames (Yjs CRDT) → broadcast as binary.
+	// Sync operations received as text frames (JSON snapshot) → broadcast as text.
+	// We distinguish by checking if the payload looks like JSON (starts with '{').
 	if result.Operation.Type == collaboration.OpSync && len(result.Operation.Payload) > 0 {
-		r.broadcastBinary(result.Operation.Payload, result)
+		if len(result.Operation.Payload) > 0 && result.Operation.Payload[0] == '{' {
+			// JSON text sync — broadcast as text.
+			msg := FromOperation(result.Operation)
+			data, err := json.Marshal(msg)
+			if err != nil {
+				log.Printf("[room %d] marshal error: %v", r.domainRoom.ID(), err)
+				return
+			}
+			r.broadcastText(data, result)
+		} else {
+			// Binary CRDT sync — broadcast as binary.
+			r.broadcastBinary(result.Operation.Payload, result)
+		}
 	} else {
 		msg := FromOperation(result.Operation)
 		data, err := json.Marshal(msg)
