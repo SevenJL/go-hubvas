@@ -2,6 +2,8 @@ import type { ApiResponse } from '../types';
 
 const BASE_URL = '/api';
 
+// ---- Token management ----
+
 let accessToken: string | null = localStorage.getItem('access_token');
 let refreshToken: string | null = localStorage.getItem('refresh_token');
 
@@ -23,6 +25,49 @@ export function getAccessToken(): string | null {
   return accessToken;
 }
 
+// Track whether a refresh is in progress to avoid multiple concurrent refreshes.
+let refreshPromise: Promise<boolean> | null = null;
+
+async function tryRefreshToken(): Promise<boolean> {
+  if (!refreshToken) return false;
+
+  // Reuse an in-flight refresh to avoid thundering-herd.
+  if (refreshPromise) return refreshPromise;
+
+  refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${BASE_URL}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      });
+
+      if (!res.ok) {
+        clearTokens();
+        return false;
+      }
+
+      const body: ApiResponse<{ access_token: string; refresh_token: string }> = await res.json();
+      if (body.code !== 0 || !body.data) {
+        clearTokens();
+        return false;
+      }
+
+      setTokens(body.data.access_token, body.data.refresh_token);
+      return true;
+    } catch {
+      // Network error — don't clear tokens (might be a transient issue).
+      return false;
+    } finally {
+      refreshPromise = null;
+    }
+  })();
+
+  return refreshPromise;
+}
+
+// ---- Request helper ----
+
 async function request<T>(
   method: string,
   path: string,
@@ -33,34 +78,43 @@ async function request<T>(
     headers['Authorization'] = `Bearer ${accessToken}`;
   }
 
-  const res = await fetch(`${BASE_URL}${path}`, {
+  let res = await fetch(`${BASE_URL}${path}`, {
     method,
     headers,
     body: body ? JSON.stringify(body) : undefined,
   });
 
+  // If the access token is expired, try to refresh and retry ONCE.
   if (res.status === 401 && refreshToken) {
-    // Try to refresh.
-    const refreshRes = await fetch(`${BASE_URL}/auth/refresh`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token: refreshToken }),
-    });
-    if (refreshRes.ok) {
-      const data: ApiResponse<{ access_token: string; refresh_token: string }> = await refreshRes.json();
-      if (data.data) {
-        setTokens(data.data.access_token, data.data.refresh_token);
-        headers['Authorization'] = `Bearer ${data.data.access_token}`;
-        const retryRes = await fetch(`${BASE_URL}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
-        return retryRes.json();
-      }
+    const refreshed = await tryRefreshToken();
+    if (refreshed) {
+      // Retry with the new access token.
+      headers['Authorization'] = `Bearer ${accessToken}`;
+      res = await fetch(`${BASE_URL}${path}`, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } else {
+      // Refresh failed — clear tokens so the UI can show the login page.
+      clearTokens();
     }
-    clearTokens();
-    window.location.href = '/login';
-    throw new Error('Session expired');
   }
 
-  return res.json();
+  // Parse the response body.
+  let json: ApiResponse<T>;
+  try {
+    json = await res.json();
+  } catch {
+    // If the response isn't JSON (e.g., a network error or HTML error page),
+    // synthesize an error response.
+    return {
+      code: res.status || 500,
+      message: `Request failed (${res.status})`,
+    };
+  }
+
+  return json;
 }
 
 export const api = {

@@ -1,61 +1,148 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Tldraw } from '@tldraw/tldraw';
+import { Tldraw, useEditor } from '@tldraw/tldraw';
 import '@tldraw/tldraw/tldraw.css';
 import { canvasService } from '../services/canvas';
-import { useWebSocket } from '../hooks/useWebSocket';
+import { getAccessToken } from '../services/api';
+import { useYjsProvider } from '../hooks/useYjsProvider';
+import { useTldrawSync } from '../hooks/useTldrawSync';
+import { useAuth } from '../store/AuthContext';
 import { Layout } from '../components/layout/Layout';
-import type { CanvasInfo, WSMessage, PresenceMember, AwarenessPayload } from '../types';
-import { ArrowLeft, Users } from 'lucide-react';
+import type { CanvasInfo } from '../types';
+import { ArrowLeft, Users, Wifi, WifiOff } from 'lucide-react';
+
+/**
+ * RemoteCursorOverlay renders collaborator cursors as a custom tldraw component.
+ */
+function RemoteCursors({
+  cursors,
+}: {
+  cursors: Map<number, { x: number; y: number; username: string; color: string }>;
+}) {
+  if (cursors.size === 0) return null;
+
+  return (
+    <>
+      {Array.from(cursors.entries()).map(([uid, pos]) => (
+        <div
+          key={uid}
+          className="absolute pointer-events-none"
+          style={{
+            left: pos.x,
+            top: pos.y,
+            zIndex: 1000,
+            transition: 'left 0.08s linear, top 0.08s linear',
+          }}
+        >
+          <svg width="18" height="18" viewBox="0 0 18 18">
+            <path
+              d="M3 1l12 12l-5 1l-3 4l-2-1l3-5z"
+              fill={pos.color}
+              stroke="white"
+              strokeWidth="0.5"
+            />
+          </svg>
+          <span
+            className="text-[10px] text-white px-1.5 py-0.5 rounded ml-0.5 whitespace-nowrap"
+            style={{ backgroundColor: pos.color }}
+          >
+            {pos.username}
+          </span>
+        </div>
+      ))}
+    </>
+  );
+}
+
+/**
+ * AwarenessTracker tracks the local user's pointer and sends awareness updates.
+ */
+function AwarenessTracker({
+  onCursorMove,
+}: {
+  onCursorMove: (cursor: { x: number; y: number } | null) => void;
+}) {
+  const editor = useEditor();
+
+  useEffect(() => {
+    const handlePointerMove = () => {
+      const inputs = editor.inputs;
+      onCursorMove({
+        x: inputs.currentScreenPoint.x,
+        y: inputs.currentScreenPoint.y,
+      });
+    };
+
+    // tldraw doesn't expose a simple pointer move event in v5,
+    // but we can listen to the editor's tick or use a DOM listener.
+    const container = editor.getContainer();
+    const onPointerMove = (e: PointerEvent) => {
+      onCursorMove({ x: e.clientX, y: e.clientY });
+    };
+
+    container.addEventListener('pointermove', onPointerMove);
+    return () => container.removeEventListener('pointermove', onPointerMove);
+  }, [editor, onCursorMove]);
+
+  return null;
+}
 
 export function Editor() {
   const { id } = useParams<{ id: string }>();
   const canvasId = id!;
+  const { user } = useAuth();
   const [canvas, setCanvas] = useState<CanvasInfo | null>(null);
-  const [onlineUsers, setOnlineUsers] = useState<PresenceMember[]>([]);
-  const [cursors, setCursors] = useState<Map<string, { x: number; y: number; username: string }>>(new Map());
-  const [error, setError] = useState('');
+  const [loadError, setLoadError] = useState('');
+  const containerRef = useRef<HTMLDivElement>(null);
 
+  // Load canvas metadata.
   useEffect(() => {
-    canvasService.get(canvasId).then(setCanvas).catch(err => setError(err.message));
+    canvasService.get(canvasId).then(setCanvas).catch(err => setLoadError(err.message));
   }, [canvasId]);
 
-  const handleMessage = useCallback((msg: WSMessage) => {
-    switch (msg.type) {
-      case 'awareness': {
-        const p = msg.payload as AwarenessPayload;
-        if (p?.cursor) {
-          setCursors(prev => {
-            const next = new Map(prev);
-            next.set('user', { x: p.cursor!.x, y: p.cursor!.y, username: 'User' });
-            return next;
-          });
-        }
-        break;
-      }
-    }
-  }, []);
-
-  const handlePresence = useCallback((members: PresenceMember[]) => {
-    setOnlineUsers(members);
-  }, []);
-
-  const handleError = useCallback((msg: string) => {
-    setError(msg);
-  }, []);
-
-  const { connected } = useWebSocket({
+  // Set up Yjs sync via our custom WebSocket provider.
+  const token = getAccessToken() || '';
+  const {
+    doc: yDoc,
+    connected,
+    awareness,
+    onlineUsers,
+    sendAwareness,
+  } = useYjsProvider({
     canvasId,
-    onMessage: handleMessage,
-    onPresence: handlePresence,
-    onError: handleError,
+    token,
+    username: user?.username || 'Anonymous',
+    userId: user?.id || '0',
   });
+
+  // Bridge tldraw store to Yjs.
+  const { onMount } = useTldrawSync({
+    yDoc,
+    connected,
+    onSnapshot: (snapshot) => {
+      // Snapshot is auto-saved every 5 seconds in the Yjs doc.
+      // Could also persist to backend here.
+    },
+  });
+
+  // Throttled awareness sender.
+  const awarenessThrottle = useRef<number>(0);
+  const handleCursorMove = useCallback(
+    (cursor: { x: number; y: number } | null) => {
+      const now = Date.now();
+      // Throttle to 25fps to avoid flooding the server.
+      if (now - awarenessThrottle.current < 40) return;
+      awarenessThrottle.current = now;
+      sendAwareness(cursor);
+    },
+    [sendAwareness],
+  );
 
   if (!canvas) {
     return (
       <Layout>
         <div className="max-w-5xl mx-auto px-4 py-8 text-center text-gray-400">
-          {error || 'Loading canvas...'}
+          {loadError || 'Loading canvas...'}
         </div>
       </Layout>
     );
@@ -67,19 +154,43 @@ export function Editor() {
         {/* Toolbar */}
         <div className="h-11 bg-white border-b border-gray-200 flex items-center justify-between px-4 z-50 shrink-0">
           <div className="flex items-center gap-3">
-            <Link to="/dashboard" className="text-gray-400 hover:text-gray-600 transition-colors">
+            <Link
+              to="/dashboard"
+              className="text-gray-400 hover:text-gray-600 transition-colors"
+              title="Back to dashboard"
+            >
               <ArrowLeft size={20} />
             </Link>
             <h2 className="font-semibold text-gray-900 text-sm">{canvas.title}</h2>
-            <span className={`w-2 h-2 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
-            <span className="text-xs text-gray-400">
-              {connected ? `${onlineUsers.length + 1} online` : 'Reconnecting...'}
+            <span className="flex items-center gap-1.5 text-xs">
+              {connected ? (
+                <>
+                  <Wifi size={12} className="text-green-500" />
+                  <span className="text-green-600">
+                    {onlineUsers.length > 0 ? `${onlineUsers.length + 1} online` : 'Connected'}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <WifiOff size={12} className="text-red-500" />
+                  <span className="text-red-500">Reconnecting...</span>
+                </>
+              )}
             </span>
           </div>
+
           <div className="flex items-center gap-2">
             <Users size={14} className="text-gray-400" />
             <div className="flex -space-x-1.5">
-              {onlineUsers.slice(0, 4).map(m => (
+              {/* Current user */}
+              <div
+                className="w-6 h-6 rounded-full bg-indigo-500 border-2 border-white flex items-center justify-center text-[10px] font-medium text-white"
+                title={`${user?.username || 'You'} (you)`}
+              >
+                {(user?.username || 'Y')[0]?.toUpperCase()}
+              </div>
+              {/* Online collaborators */}
+              {onlineUsers.slice(0, 5).map(m => (
                 <div
                   key={m.user_id}
                   className="w-6 h-6 rounded-full bg-indigo-100 border-2 border-white flex items-center justify-center text-[10px] font-medium text-indigo-600"
@@ -88,26 +199,26 @@ export function Editor() {
                   {m.username[0]?.toUpperCase() || '?'}
                 </div>
               ))}
+              {onlineUsers.length > 5 && (
+                <div className="w-6 h-6 rounded-full bg-gray-100 border-2 border-white flex items-center justify-center text-[10px] font-medium text-gray-500">
+                  +{onlineUsers.length - 5}
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* tldraw drawing canvas */}
-        <div className="flex-1 relative">
-          <Tldraw />
+        {/* tldraw canvas */}
+        <div className="flex-1 relative" ref={containerRef}>
+          <Tldraw
+            onMount={onMount}
+            components={{
+              // We could add custom components here for special UI.
+            }}
+          />
+          <AwarenessTracker onCursorMove={handleCursorMove} />
+          <RemoteCursors cursors={awareness} />
         </div>
-
-        {/* Remote cursor overlays */}
-        {Array.from(cursors.entries()).map(([uid, pos]) => (
-          <div key={uid} className="absolute pointer-events-none" style={{ left: pos.x, top: pos.y, zIndex: 1000 }}>
-            <svg width="18" height="18" viewBox="0 0 18 18">
-              <path d="M3 1l12 12l-5 1l-3 4l-2-1l3-5z" fill="#6366f1" />
-            </svg>
-            <span className="text-[10px] text-white bg-indigo-500 px-1.5 py-0.5 rounded ml-0.5">
-              {pos.username}
-            </span>
-          </div>
-        ))}
       </div>
     </Layout>
   );

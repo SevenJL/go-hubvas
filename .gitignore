@@ -8,6 +8,11 @@
 *.so
 *.dylib
 
+# Compiled Go binaries
+bin/
+api-server
+ws-server
+
 # Test binary, built with `go test -c`
 *.test
 
@@ -31,3 +36,4 @@ go.work.sum
 # .idea/
 # .vscode/
 frontend/node_modules
+frontend/dist

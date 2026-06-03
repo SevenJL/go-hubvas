@@ -15,6 +15,11 @@ type LoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
+// RefreshRequest is the input DTO for refreshing tokens.
+type RefreshRequest struct {
+	RefreshToken string `json:"refresh_token" binding:"required"`
+}
+
 // TokenResponse is the output DTO containing JWT tokens.
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
@@ -30,4 +35,10 @@ type UserDTO struct {
 	Email     string    `json:"email"`
 	AvatarURL string    `json:"avatar_url,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// RegisterResponse is the combined response for registration (user + tokens auto-login).
+type RegisterResponse struct {
+	User   *UserDTO       `json:"user"`
+	Tokens *TokenResponse `json:"tokens"`
 }

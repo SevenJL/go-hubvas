@@ -1,4 +1,6 @@
 // ---- API Response Envelope ----
+// Backend returns: { "code": 0, "message": "ok", "data": T }
+// On errors:       { "code": 4xx/5xx, "message": "..." }
 export interface ApiResponse<T> {
   code: number;
   message: string;
@@ -7,18 +9,23 @@ export interface ApiResponse<T> {
 
 // ---- Auth ----
 export interface User {
-  id: string;
+  id: string;           // backend sends id as string via json:"id,string"
   username: string;
   email: string;
   avatar_url: string;
-  created_at: string;
+  created_at: string;   // ISO 8601 timestamp
 }
 
 export interface TokenResponse {
   access_token: string;
   refresh_token: string;
-  expires_at: number;
-  token_type: string;
+  expires_at: number;   // unix timestamp (seconds)
+  token_type: string;   // "Bearer"
+}
+
+export interface RegisterResponse {
+  user: User;
+  tokens: TokenResponse;
 }
 
 // ---- Canvas ----
@@ -60,7 +67,7 @@ export interface CommentInfo {
   author_id: string;
   author_name: string;
   content: string;
-  created_at: number;
+  created_at: number;   // unix timestamp (seconds)
 }
 
 export interface FeedResponse {
@@ -68,6 +75,11 @@ export interface FeedResponse {
   total_count: number;
   page: number;
   page_size: number;
+}
+
+export interface CommentListResponse {
+  items: CommentInfo[];
+  total: number;
 }
 
 // ---- WebSocket ----

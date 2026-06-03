@@ -11,11 +11,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/hubvas/internal/application/auth"
 	appCanvas "github.com/hubvas/internal/application/canvas"
 	appCommunity "github.com/hubvas/internal/application/community"
+	"github.com/hubvas/internal/domain/shared"
 	infAuth "github.com/hubvas/internal/infrastructure/auth"
+	infnats "github.com/hubvas/internal/infrastructure/messaging/nats"
 	"github.com/hubvas/internal/infrastructure/persistence/postgres"
 	"github.com/hubvas/internal/interfaces/http"
 	"github.com/hubvas/internal/interfaces/http/handler"
@@ -77,10 +80,34 @@ func main() {
 		&snowflakeIDAdapter{sf: idGen},
 	)
 
+	// ---- Event Bus (optional — NATS for cross-service events) ----
+	var eventBus *infnats.EventBus
+	if cfg.NATS.URL != "" {
+		nc, err := natsgo.Connect(cfg.NATS.URL)
+		if err != nil {
+			log.Printf("WARNING: NATS unavailable — event bus in-process only: %v", err)
+			eventBus = infnats.NewEventBus(nil)
+		} else {
+			eventBus = infnats.NewEventBus(nc)
+			log.Println("Connected to NATS (event bus with cross-service delivery)")
+
+			// Example cross-context subscription:
+			// When a canvas is published, the community context can react.
+			eventBus.Subscribe("CanvasPublished", func(e shared.DomainEvent) error {
+				log.Printf("[eventbus] canvas published: %s", e.EventName())
+				return nil
+			})
+		}
+	} else {
+		eventBus = infnats.NewEventBus(nil)
+		log.Println("INFO: NATS not configured — event bus in-process only")
+	}
+
 	// ---- Interfaces: HTTP Handlers ----
 	authHandler := handler.NewAuthHandler(authAppSvc)
 	canvasHandler := handler.NewCanvasHandler(canvasAppSvc)
 	communityHandler := handler.NewCommunityHandler(communityAppSvc)
+	healthHandler := handler.NewHealthHandler(pool)
 
 	rateLimiter := middleware.NewRateLimiter(100, 200)
 
@@ -91,6 +118,7 @@ func main() {
 		AuthHandler:      authHandler,
 		CanvasHandler:    canvasHandler,
 		CommunityHandler: communityHandler,
+		HealthHandler:    healthHandler,
 		WSGateway:        nil, // WS server runs in separate process
 		TokenSvc:         jwtSvc,
 		RateLimiter:      rateLimiter,
@@ -116,6 +144,7 @@ func main() {
 	_ = permSvc
 	_ = canvasAppSvc
 	_ = communityAppSvc
+	_ = eventBus
 }
 
 // loadConfig reads configuration from environment variables with defaults.

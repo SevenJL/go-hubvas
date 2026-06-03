@@ -12,6 +12,7 @@ type RouterConfig struct {
 	AuthHandler      *handler.AuthHandler
 	CanvasHandler    *handler.CanvasHandler
 	CommunityHandler *handler.CommunityHandler
+	HealthHandler    *handler.HealthHandler
 	WSGateway        *ws.Gateway
 	TokenSvc         middleware.TokenValidator
 	RateLimiter      *middleware.RateLimiter
@@ -26,12 +27,17 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	r.Use(cfg.RateLimiter.Middleware())
 	r.Use(gin.Logger())
 
+	// ---- Health check (no auth) ----
+	r.GET("/health", cfg.HealthHandler.Health)
+	r.GET("/ready", cfg.HealthHandler.Ready)
+
 	// ---- Public routes (no auth required) ----
 
 	auth := r.Group("/api/auth")
 	{
 		auth.POST("/register", cfg.AuthHandler.Register)
 		auth.POST("/login", cfg.AuthHandler.Login)
+		auth.POST("/refresh", cfg.AuthHandler.Refresh)
 	}
 
 	// Community — public read access.

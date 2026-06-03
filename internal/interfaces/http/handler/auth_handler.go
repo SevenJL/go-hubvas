@@ -18,6 +18,8 @@ func NewAuthHandler(appSvc *auth.AuthApplicationService) *AuthHandler {
 }
 
 // Register handles POST /api/auth/register.
+// On success, the user is created AND tokens are returned so the client
+// can immediately authenticate without a second login request.
 func (h *AuthHandler) Register(c *gin.Context) {
 	var req auth.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -25,12 +27,13 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	user, err := h.appSvc.Register(c.Request.Context(), req)
+	result, err := h.appSvc.Register(c.Request.Context(), req)
 	if err != nil {
 		response.Error(c, 400, "register_failed", err.Error())
 		return
 	}
-	response.Created(c, user)
+
+	response.Created(c, result)
 }
 
 // Login handles POST /api/auth/login.
@@ -49,9 +52,26 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	response.OK(c, tokens)
 }
 
+// Refresh handles POST /api/auth/refresh.
+// Accepts a refresh token and returns a new token pair.
+func (h *AuthHandler) Refresh(c *gin.Context) {
+	var req auth.RefreshRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	tokens, err := h.appSvc.Refresh(c.Request.Context(), req)
+	if err != nil {
+		response.Unauthorized(c, err.Error())
+		return
+	}
+	response.OK(c, tokens)
+}
+
 // Me handles GET /api/auth/me.
+// The userID is injected by AuthMiddleware.
 func (h *AuthHandler) Me(c *gin.Context) {
-	// userID is injected by AuthMiddleware.
 	userIDVal, exists := c.Get("userID")
 	if !exists {
 		response.Unauthorized(c, "not authenticated")

@@ -1,0 +1,166 @@
+version: "3.9"
+
+# Hubvas — Collaborative Canvas Platform
+# Development / single-host deployment with all services.
+#
+# Usage:
+#   docker compose -f deployments/docker/docker-compose.yaml up -d
+#   docker compose -f deployments/docker/docker-compose.yaml down
+
+services:
+  # ---- PostgreSQL 15 — metadata & social data ----
+  postgres:
+    image: postgres:15-alpine
+    container_name: hubvas-postgres
+    environment:
+      POSTGRES_USER: hubvas
+      POSTGRES_PASSWORD: hubvas
+      POSTGRES_DB: hubvas
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Auto-run migrations on first start.
+      - ../../internal/infrastructure/persistence/postgres/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hubvas"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ---- Redis 7 — presence, locking, rate limiting ----
+  redis:
+    image: redis:7-alpine
+    container_name: hubvas-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # ---- NATS 2 — pub/sub for cross-node fan-out ----
+  nats:
+    image: nats:2-alpine
+    container_name: hubvas-nats
+    command: "-js"
+    ports:
+      - "4222:4222"
+      - "8222:8222" # monitoring
+    healthcheck:
+      test: ["CMD", "nats", "server", "check", "connection"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ---- MinIO — S3-compatible object storage for snapshots ----
+  minio:
+    image: minio/minio:latest
+    container_name: hubvas-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web console
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Create the snapshot bucket in MinIO on startup.
+  minio-init:
+    image: minio/mc:latest
+    container_name: hubvas-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: |
+      /bin/sh -c "
+      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc mb --ignore-existing local/hubvas-snapshots;
+      mc anonymous set private local/hubvas-snapshots;
+      echo 'MinIO bucket ready';
+      exit 0;
+      "
+
+  # ---- API Server (REST) ----
+  api-server:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.api
+    container_name: hubvas-api
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: hubvas
+      DB_PASSWORD: hubvas
+      DB_NAME: hubvas
+      DB_SSLMODE: disable
+      JWT_ACCESS_SECRET: dev-access-secret-change-in-production
+      JWT_REFRESH_SECRET: dev-refresh-secret-change-in-production
+      REDIS_ADDR: redis:6379
+      NATS_URL: nats://nats:4222
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_BUCKET: hubvas-snapshots
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  # ---- WebSocket Server (real-time collaboration) ----
+  ws-server:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.ws
+    container_name: hubvas-ws
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: hubvas
+      DB_PASSWORD: hubvas
+      DB_NAME: hubvas
+      DB_SSLMODE: disable
+      JWT_ACCESS_SECRET: dev-access-secret-change-in-production
+      JWT_REFRESH_SECRET: dev-refresh-secret-change-in-production
+      REDIS_ADDR: redis:6379
+      NATS_URL: nats://nats:4222
+      STORAGE_ENDPOINT: minio:9000
+      STORAGE_ACCESS_KEY: minioadmin
+      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_BUCKET: hubvas-snapshots
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  miniodata:
