@@ -96,9 +96,10 @@ export function Editor() {
     (editor: Parameters<typeof onTldrawMount>[0]) => {
       onTldrawMount(editor);
 
-      // Read-only mode: prevent any editing.
+      // Read-only mode: lock editing + hide UI.
       if (!canEdit) {
         editor.updateInstanceState({ isReadonly: true });
+        editor.setCurrentTool('select');
       }
 
       // Pointer tracking for awareness (editors only).
