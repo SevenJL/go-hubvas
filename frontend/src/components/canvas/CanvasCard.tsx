@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { Clock, Globe, Lock, Users } from 'lucide-react';
 import { Card } from '../ui/Card';
 import { Badge } from '../ui/Badge';
+import { CanvasThumbnail } from './CanvasThumbnail';
 import type { CanvasInfo } from '../../types';
 
 interface CanvasCardProps {
@@ -16,8 +17,8 @@ export function CanvasCard({ canvas, showActions, onPublish, onFork, onDelete }:
   return (
     <Card hover className="group">
       <Link to={`/canvas/${canvas.id}/edit`} className="block">
-        <div className="aspect-video bg-gradient-to-br from-indigo-50 to-purple-50 rounded-lg mb-3 flex items-center justify-center">
-          <span className="text-4xl opacity-40">🎨</span>
+        <div className="rounded-lg mb-3 overflow-hidden">
+          <CanvasThumbnail canvasId={canvas.id} />
         </div>
         <h3 className="font-semibold text-gray-900 truncate mb-2">{canvas.title}</h3>
         <div className="flex items-center gap-3 text-xs text-gray-500">

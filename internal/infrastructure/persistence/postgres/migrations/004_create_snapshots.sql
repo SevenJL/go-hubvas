@@ -3,6 +3,7 @@
 CREATE TABLE IF NOT EXISTS canvas_snapshots (
     canvas_id  BIGINT PRIMARY KEY REFERENCES canvases(id) ON DELETE CASCADE,
     data       JSONB NOT NULL,
+    thumbnail  TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

@@ -31,19 +31,39 @@ export function useTldrawSync({ canvasId, onSnapshotSaved }: UseTldrawSyncOption
       if (json === lastSaved.current) return;
       lastSaved.current = json;
 
+      // Generate thumbnail asynchronously (best-effort, with timeout).
+      let thumbnail = '';
+      try {
+        const shapeIds = [...editor.getCurrentPageShapeIds()];
+        if (shapeIds.length > 0) {
+          const result = await Promise.race([
+            editor.toImageDataUrl(shapeIds, {
+              format: 'png',
+              scale: 0.25,
+              background: true,
+            }),
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+          ]);
+          if (result) thumbnail = result.url;
+        }
+      } catch {
+        // Thumbnail generation is best-effort. Don't block save.
+      }
+
+      console.log('[tldraw] saving...', { size: json.length, hasThumbnail: !!thumbnail });
       await fetch(`${BASE_URL}/canvases/${canvasId}/snapshot`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: json,
+        body: JSON.stringify({ data: JSON.parse(json), thumbnail }),
       });
+      console.log('[tldraw] saved');
 
-      // Notify peers via the callback (Editor wires this to WebSocket).
       onSnapshotSaved?.(JSON.parse(json));
-    } catch {
-      // Silently retry on next change.
+    } catch (e) {
+      console.error('[tldraw] save failed:', e);
     }
   }, [canvasId, onSnapshotSaved]);
 
@@ -78,14 +98,20 @@ export function useTldrawSync({ canvasId, onSnapshotSaved }: UseTldrawSyncOption
       });
       const body = await res.json();
 
-      if (body.code === 0 && body.data) {
+      // Response format: { data: <tldraw snapshot>, thumbnail: "<base64>" }
+      const snapshot = body.data?.data || body.data;
+      if (body.code === 0 && snapshot) {
+        console.log('[tldraw] loading saved snapshot...');
         editor.store.mergeRemoteChanges(() => {
-          editor.store.loadStoreSnapshot(body.data);
+          editor.store.loadStoreSnapshot(snapshot);
         });
-        lastSaved.current = JSON.stringify(body.data);
+        lastSaved.current = JSON.stringify(snapshot);
+        console.log('[tldraw] loaded');
+      } else {
+        console.log('[tldraw] no saved snapshot');
       }
-    } catch {
-      // Start with empty canvas if load fails.
+    } catch (e) {
+      console.error('[tldraw] load failed:', e);
     } finally {
       loaded.current = true;
     }

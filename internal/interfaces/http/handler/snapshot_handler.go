@@ -23,6 +23,7 @@ func NewSnapshotHandler(appSvc *canvas.SnapshotApplicationService) *SnapshotHand
 }
 
 // Save handles PUT /api/canvases/:id/snapshot.
+// Body: { "data": <tldraw JSON>, "thumbnail": "<base64 data URL>" }
 func (h *SnapshotHandler) Save(c *gin.Context) {
 	canvasID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -32,16 +33,25 @@ func (h *SnapshotHandler) Save(c *gin.Context) {
 
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil || len(body) == 0 {
-		response.BadRequest(c, "empty snapshot body")
+		response.BadRequest(c, "empty body")
 		return
 	}
-	if !json.Valid(body) {
-		response.BadRequest(c, "snapshot must be valid JSON")
+
+	var req struct {
+		Data      json.RawMessage `json:"data"`
+		Thumbnail string          `json:"thumbnail"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		response.BadRequest(c, "invalid JSON: "+err.Error())
+		return
+	}
+	if len(req.Data) == 0 {
+		response.BadRequest(c, "missing data field")
 		return
 	}
 
 	userID, _ := c.Get("userID")
-	if err := h.appSvc.Save(c.Request.Context(), canvasDomain.CanvasID(canvasID), userID.(identity.UserID), body); err != nil {
+	if err := h.appSvc.Save(c.Request.Context(), canvasDomain.CanvasID(canvasID), userID.(identity.UserID), req.Data, req.Thumbnail); err != nil {
 		response.Error(c, 403, "save_failed", err.Error())
 		return
 	}
@@ -49,6 +59,7 @@ func (h *SnapshotHandler) Save(c *gin.Context) {
 }
 
 // Load handles GET /api/canvases/:id/snapshot.
+// Returns { "data": <tldraw JSON>, "thumbnail": "<base64 data URL or empty>" }
 func (h *SnapshotHandler) Load(c *gin.Context) {
 	canvasID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -57,7 +68,7 @@ func (h *SnapshotHandler) Load(c *gin.Context) {
 	}
 
 	userID, _ := c.Get("userID")
-	data, err := h.appSvc.Load(c.Request.Context(), canvasDomain.CanvasID(canvasID), userID.(identity.UserID))
+	data, thumbnail, err := h.appSvc.Load(c.Request.Context(), canvasDomain.CanvasID(canvasID), userID.(identity.UserID))
 	if err != nil {
 		response.Error(c, 403, "load_failed", err.Error())
 		return
@@ -68,9 +79,9 @@ func (h *SnapshotHandler) Load(c *gin.Context) {
 	}
 
 	var snapshot interface{}
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		response.InternalError(c, "failed to parse snapshot")
-		return
-	}
-	response.OK(c, snapshot)
+	json.Unmarshal(data, &snapshot)
+	response.OK(c, gin.H{
+		"data":      snapshot,
+		"thumbnail": thumbnail,
+	})
 }

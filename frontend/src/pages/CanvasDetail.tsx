@@ -4,6 +4,7 @@ import { Layout } from '../components/layout/Layout';
 import { canvasService } from '../services/canvas';
 import { communityService } from '../services/community';
 import { useAuth } from '../store/AuthContext';
+import { CanvasThumbnail } from '../components/canvas/CanvasThumbnail';
 import type { CanvasInfo, CommentInfo } from '../types';
 import { Heart, MessageCircle, GitFork, Send, ArrowLeft } from 'lucide-react';
 
@@ -73,12 +74,7 @@ export function CanvasDetail() {
 
         <div className="card overflow-hidden">
           {/* Canvas preview */}
-          <div className="aspect-video bg-gradient-to-br from-indigo-100 via-purple-100 to-pink-100 flex items-center justify-center">
-            <div className="text-center">
-              <span className="text-6xl">🎨</span>
-              <p className="text-gray-400 text-sm mt-2">Canvas Preview</p>
-            </div>
-          </div>
+          <CanvasThumbnail canvasId={canvas.id} />
 
           <div className="p-6">
             <h1 className="text-2xl font-bold text-gray-900">{canvas.title}</h1>

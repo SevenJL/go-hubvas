@@ -134,13 +134,11 @@ func (s *CanvasApplicationService) Fork(ctx context.Context, sourceID canvasDoma
 		return nil, err
 	}
 
-	// Copy the source canvas's visual snapshot to the fork.
-	snapshot, err := s.snapshotRepo.Load(ctx, sourceID)
+	// Copy the source canvas's visual snapshot and thumbnail to the fork.
+	snapshot, thumbnail, err := s.snapshotRepo.Load(ctx, sourceID)
 	if err == nil && len(snapshot) > 0 {
-		if err := s.snapshotRepo.Save(ctx, newID, snapshot); err != nil {
-			// Best-effort: fork succeeds even if snapshot copy fails.
-			// The user can always start with a blank canvas.
-		}
+		_ = s.snapshotRepo.Save(ctx, newID, snapshot, thumbnail)
+		// Best-effort: fork succeeds even if snapshot copy fails.
 	}
 
 	return toCanvasDTO(fork, 0), nil
