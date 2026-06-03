@@ -198,7 +198,7 @@ func (r *Room) sendToClient(userID identity.UserID, msg interface{}) {
 }
 
 // Register adds a client to the room and wires its onRead callback
-// to the room's inbound channel.
+// to the room's inbound channel. Broadcasts full presence after join.
 func (r *Room) Register(client *Client) {
 	client.onRead = func(op collaboration.Operation) {
 		select {
@@ -218,9 +218,12 @@ func (r *Room) Register(client *Client) {
 
 	log.Printf("[room %d] user %d (%s) joined (total: %d)",
 		r.domainRoom.ID(), client.UserID, client.Username, r.MemberCount())
+
+	// Broadcast full presence list to everyone.
+	r.broadcastPresence()
 }
 
-// Unregister removes a client from the room.
+// Unregister removes a client from the room. Broadcasts full presence after leave.
 func (r *Room) Unregister(client *Client) {
 	r.clientsMu.Lock()
 	delete(r.clients, client)
@@ -230,6 +233,40 @@ func (r *Room) Unregister(client *Client) {
 
 	log.Printf("[room %d] user %d left (total: %d)",
 		r.domainRoom.ID(), client.UserID, r.MemberCount())
+
+	// Broadcast updated presence list.
+	r.broadcastPresence()
+}
+
+// broadcastPresence sends the full online member list to all connected clients.
+func (r *Room) broadcastPresence() {
+	members := r.buildPresenceList()
+	payload, _ := json.Marshal(map[string]interface{}{"online": members})
+	msg := Message{Type: MsgTypePresence, Payload: payload}
+	data, _ := json.Marshal(msg)
+
+	r.clientsMu.RLock()
+	defer r.clientsMu.RUnlock()
+	for client := range r.clients {
+		client.Send(data)
+	}
+}
+
+// buildPresenceList builds the full list of online PresenceMembers.
+func (r *Room) buildPresenceList() []PresenceMember {
+	r.clientsMu.RLock()
+	defer r.clientsMu.RUnlock()
+
+	members := make([]PresenceMember, 0, len(r.clients))
+	for client := range r.clients {
+		members = append(members, PresenceMember{
+			UserID:    int64(client.UserID),
+			Username:  client.Username,
+			AvatarURL: "",
+			Role:      client.Role,
+		})
+	}
+	return members
 }
 
 // DomainRoom returns the underlying domain aggregate.

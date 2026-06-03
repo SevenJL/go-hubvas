@@ -9,7 +9,8 @@ import { useTldrawSync } from '../hooks/useTldrawSync';
 import { useAuth } from '../store/AuthContext';
 import { Layout } from '../components/layout/Layout';
 import type { CanvasInfo } from '../types';
-import { ArrowLeft, Users, Wifi, WifiOff } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
+import { OnlineUsers } from '../components/canvas/OnlineUsers';
 
 function RemoteCursors({
   cursors,
@@ -147,43 +148,12 @@ export function Editor() {
               <ArrowLeft size={20} />
             </Link>
             <h2 className="font-semibold text-gray-900 text-sm">{canvas.title}</h2>
-            <span className="flex items-center gap-1.5 text-xs">
-              {connected ? (
-                <>
-                  <Wifi size={12} className="text-green-500" />
-                  <span className="text-green-600">
-                    {onlineUsers.length > 0 ? `${onlineUsers.length + 1} online` : 'Connected'}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <WifiOff size={12} className="text-red-500" />
-                  <span className="text-red-500">Reconnecting...</span>
-                </>
-              )}
-            </span>
           </div>
-          <div className="flex items-center gap-2">
-            <Users size={14} className="text-gray-400" />
-            <div className="flex -space-x-1.5">
-              <div className="w-6 h-6 rounded-full bg-indigo-500 border-2 border-white flex items-center justify-center text-[10px] font-medium text-white"
-                   title={`${user?.username || 'You'} (you)`}>
-                {(user?.username || 'Y')[0]?.toUpperCase()}
-              </div>
-              {onlineUsers.slice(0, 5).map(m => (
-                <div key={m.user_id}
-                     className="w-6 h-6 rounded-full bg-indigo-100 border-2 border-white flex items-center justify-center text-[10px] font-medium text-indigo-600"
-                     title={m.username}>
-                  {m.username[0]?.toUpperCase() || '?'}
-                </div>
-              ))}
-              {onlineUsers.length > 5 && (
-                <div className="w-6 h-6 rounded-full bg-gray-100 border-2 border-white flex items-center justify-center text-[10px] font-medium text-gray-500">
-                  +{onlineUsers.length - 5}
-                </div>
-              )}
-            </div>
-          </div>
+          <OnlineUsers
+            users={onlineUsers}
+            connected={connected}
+            currentUsername={user?.username || 'You'}
+          />
         </div>
 
         {/* tldraw canvas */}
