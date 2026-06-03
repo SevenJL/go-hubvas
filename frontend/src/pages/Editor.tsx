@@ -111,7 +111,11 @@ export function Editor() {
       onTldrawMount(editor);
 
       const container = editor.getContainer();
-      const onPointerMove = (e: PointerEvent) => handleCursorMove({ x: e.clientX, y: e.clientY });
+      const onPointerMove = (e: PointerEvent) => {
+        // Get container-relative coordinates (not viewport-relative).
+        const rect = container.getBoundingClientRect();
+        handleCursorMove({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+      };
       container.addEventListener('pointermove', onPointerMove);
 
       const origDispose = editor.dispose.bind(editor);
