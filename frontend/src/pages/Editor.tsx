@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { Tldraw, useEditor } from '@tldraw/tldraw';
+import { Tldraw } from '@tldraw/tldraw';
 import '@tldraw/tldraw/tldraw.css';
 import { canvasService } from '../services/canvas';
 import { getAccessToken } from '../services/api';
@@ -12,7 +12,7 @@ import type { CanvasInfo } from '../types';
 import { ArrowLeft, Users, Wifi, WifiOff } from 'lucide-react';
 
 /**
- * RemoteCursorOverlay renders collaborator cursors as a custom tldraw component.
+ * RemoteCursorOverlay renders collaborator cursors.
  */
 function RemoteCursors({
   cursors,
@@ -54,39 +54,6 @@ function RemoteCursors({
   );
 }
 
-/**
- * AwarenessTracker tracks the local user's pointer and sends awareness updates.
- */
-function AwarenessTracker({
-  onCursorMove,
-}: {
-  onCursorMove: (cursor: { x: number; y: number } | null) => void;
-}) {
-  const editor = useEditor();
-
-  useEffect(() => {
-    const handlePointerMove = () => {
-      const inputs = editor.inputs;
-      onCursorMove({
-        x: inputs.currentScreenPoint.x,
-        y: inputs.currentScreenPoint.y,
-      });
-    };
-
-    // tldraw doesn't expose a simple pointer move event in v5,
-    // but we can listen to the editor's tick or use a DOM listener.
-    const container = editor.getContainer();
-    const onPointerMove = (e: PointerEvent) => {
-      onCursorMove({ x: e.clientX, y: e.clientY });
-    };
-
-    container.addEventListener('pointermove', onPointerMove);
-    return () => container.removeEventListener('pointermove', onPointerMove);
-  }, [editor, onCursorMove]);
-
-  return null;
-}
-
 export function Editor() {
   const { id } = useParams<{ id: string }>();
   const canvasId = id!;
@@ -100,10 +67,23 @@ export function Editor() {
     canvasService.get(canvasId).then(setCanvas).catch(err => setLoadError(err.message));
   }, [canvasId]);
 
-  // Set up Yjs sync via our custom WebSocket provider.
+  // Throttled awareness sender.
+  const awarenessThrottle = useRef<number>(0);
+  const sendAwarenessRef = useRef<(cursor: { x: number; y: number } | null) => void>(() => {});
+
+  const handleCursorMove = useCallback(
+    (cursor: { x: number; y: number } | null) => {
+      const now = Date.now();
+      if (now - awarenessThrottle.current < 40) return;
+      awarenessThrottle.current = now;
+      sendAwarenessRef.current(cursor);
+    },
+    [],
+  );
+
+  // Set up Yjs sync via our custom WebSocket provider (for awareness + future CRDT).
   const token = getAccessToken() || '';
   const {
-    doc: yDoc,
     connected,
     awareness,
     onlineUsers,
@@ -115,27 +95,35 @@ export function Editor() {
     userId: user?.id || '0',
   });
 
-  // Bridge tldraw store to Yjs.
-  const { onMount } = useTldrawSync({
-    yDoc,
-    connected,
-    onSnapshot: (snapshot) => {
-      // Snapshot is auto-saved every 5 seconds in the Yjs doc.
-      // Could also persist to backend here.
-    },
-  });
+  // Keep sendAwarenessRef in sync.
+  useEffect(() => {
+    sendAwarenessRef.current = sendAwareness;
+  }, [sendAwareness]);
 
-  // Throttled awareness sender.
-  const awarenessThrottle = useRef<number>(0);
-  const handleCursorMove = useCallback(
-    (cursor: { x: number; y: number } | null) => {
-      const now = Date.now();
-      // Throttle to 25fps to avoid flooding the server.
-      if (now - awarenessThrottle.current < 40) return;
-      awarenessThrottle.current = now;
-      sendAwareness(cursor);
+  // tldraw store persistence via REST API (reliable save/load).
+  const { onMount: onTldrawMount } = useTldrawSync({ canvasId });
+
+  // Wrap onMount to also set up pointer tracking for awareness.
+  const handleMount = useCallback(
+    (editor: Parameters<typeof onTldrawMount>[0]) => {
+      // Call the tldraw sync mount (loads snapshot, starts auto-save).
+      onTldrawMount(editor);
+
+      // Wire up pointer tracking for awareness (cursor broadcast).
+      const container = editor.getContainer();
+      const onPointerMove = (e: PointerEvent) => {
+        handleCursorMove({ x: e.clientX, y: e.clientY });
+      };
+      container.addEventListener('pointermove', onPointerMove);
+
+      // Cleanup when editor unmounts.
+      const origDispose = editor.dispose.bind(editor);
+      editor.dispose = () => {
+        container.removeEventListener('pointermove', onPointerMove);
+        origDispose();
+      };
     },
-    [sendAwareness],
+    [onTldrawMount, handleCursorMove],
   );
 
   if (!canvas) {
@@ -210,13 +198,7 @@ export function Editor() {
 
         {/* tldraw canvas */}
         <div className="flex-1 relative" ref={containerRef}>
-          <Tldraw
-            onMount={onMount}
-            components={{
-              // We could add custom components here for special UI.
-            }}
-          />
-          <AwarenessTracker onCursorMove={handleCursorMove} />
+          <Tldraw onMount={handleMount} />
           <RemoteCursors cursors={awareness} />
         </div>
       </div>

@@ -39,10 +39,10 @@ type Client struct {
 	RoomID   collaboration.RoomID
 	Role     string // from the domain; set after auth
 
-	conn    *websocket.Conn
-	send    chan []byte       // buffered outbound channel
-	hub     *Hub              // the room registry (for deregistration)
-	onRead  func(collaboration.Operation) // callback to the Room's inbound
+	conn   *websocket.Conn
+	send   chan []byte            // buffered outbound channel
+	hub    *Hub                   // the room registry (for deregistration)
+	onRead func(collaboration.Operation) // callback to the Room's inbound
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -81,6 +81,10 @@ func NewClient(
 
 // readPump blocks on reading messages from the WebSocket connection and
 // pushes them to the Room's inbound processing queue.
+//
+// Supports two message formats:
+//   - TEXT frame (JSON envelope): used for awareness, presence, chat, ack.
+//   - BINARY frame (raw bytes): used for Yjs CRDT sync updates (efficient).
 func (c *Client) readPump() {
 	defer c.wg.Done()
 	defer c.cancel()
@@ -89,7 +93,7 @@ func (c *Client) readPump() {
 	c.conn.SetReadLimit(maxMessageSize)
 
 	for {
-		_, data, err := c.conn.Read(c.ctx)
+		msgType, data, err := c.conn.Read(c.ctx)
 		if err != nil {
 			if websocket.CloseStatus(err) == websocket.StatusNormalClosure ||
 				websocket.CloseStatus(err) == websocket.StatusGoingAway {
@@ -100,20 +104,34 @@ func (c *Client) readPump() {
 			return
 		}
 
-		// Parse the JSON envelope.
-		var msg Message
-		if err := json.Unmarshal(data, &msg); err != nil {
-			log.Printf("[ws] invalid message from user %d: %v", c.UserID, err)
-			c.sendError("bad_request", "invalid message format")
-			continue
-		}
+		switch msgType {
+		case websocket.MessageBinary:
+			// Binary frame — raw Yjs CRDT update. Pass directly as a sync operation.
+			op := collaboration.Operation{
+				Type:    collaboration.OpSync,
+				UserID:  c.UserID,
+				Payload: data,
+			}
+			if c.onRead != nil {
+				c.onRead(op)
+			}
 
-		op := ToOperation(msg, c.UserID)
+		case websocket.MessageText:
+			// Text frame — JSON protocol envelope for all other message types.
+			var msg Message
+			if err := json.Unmarshal(data, &msg); err != nil {
+				log.Printf("[ws] invalid message from user %d: %v", c.UserID, err)
+				c.sendError("bad_request", "invalid message format")
+				continue
+			}
 
-		// Push to the Room's serial processing queue.
-		// The onRead callback is wired by Room.Register to push to the room's inbound channel.
-		if c.onRead != nil {
-			c.onRead(op)
+			op := ToOperation(msg, c.UserID)
+			if c.onRead != nil {
+				c.onRead(op)
+			}
+
+		default:
+			log.Printf("[ws] unsupported message type %d from user %d", msgType, c.UserID)
 		}
 	}
 }
@@ -140,11 +158,22 @@ func (c *Client) writePump() {
 			}
 
 			writeCtx, cancel := context.WithTimeout(c.ctx, writeWait)
-			err := c.conn.Write(writeCtx, websocket.MessageText, msg)
-			cancel()
-			if err != nil {
-				log.Printf("[ws] write error to user %d: %v", c.UserID, err)
-				return
+
+			// Binary frame marker: msg[0] == 0 → send as binary, rest is payload.
+			if len(msg) > 0 && msg[0] == 0 {
+				err := c.conn.Write(writeCtx, websocket.MessageBinary, msg[1:])
+				cancel()
+				if err != nil {
+					log.Printf("[ws] write error to user %d: %v", c.UserID, err)
+					return
+				}
+			} else {
+				err := c.conn.Write(writeCtx, websocket.MessageText, msg)
+				cancel()
+				if err != nil {
+					log.Printf("[ws] write error to user %d: %v", c.UserID, err)
+					return
+				}
 			}
 
 		case <-ticker.C:
@@ -158,7 +187,7 @@ func (c *Client) writePump() {
 	}
 }
 
-// Send enqueues a message for delivery. If the channel is full,
+// Send enqueues a text message for delivery. If the channel is full,
 // the client is considered slow and gets kicked.
 func (c *Client) Send(data []byte) {
 	select {
@@ -168,6 +197,16 @@ func (c *Client) Send(data []byte) {
 		log.Printf("[ws] kicking slow client user %d in room %d", c.UserID, c.RoomID)
 		c.Close()
 	}
+}
+
+// SendBinary enqueues a binary frame for delivery (used for CRDT sync updates).
+func (c *Client) SendBinary(data []byte) {
+	// Prefix with a zero byte to signal binary frame to the writePump.
+	// (writePump checks if msg[0]==0 to decide text vs binary)
+	frame := make([]byte, len(data)+1)
+	frame[0] = 0 // binary marker
+	copy(frame[1:], data)
+	c.Send(frame)
 }
 
 // Close terminates the client connection.

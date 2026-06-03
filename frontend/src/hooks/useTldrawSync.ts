@@ -1,126 +1,115 @@
-import { useEffect, useRef, useCallback } from 'react';
-import type { Editor, TLStoreSnapshot } from '@tldraw/tldraw';
-import * as Y from 'yjs';
+import { useRef, useCallback, useEffect } from 'react';
+import type { Editor } from '@tldraw/tldraw';
+import { getAccessToken } from '../services/api';
+
+const BASE_URL = '/api';
 
 /**
- * useTldrawSync bridges the tldraw Editor to a Yjs Y.Doc for real-time
- * collaboration. Drawing operations are synced as Yjs updates over the
- * WebSocket connection managed by useYjsProvider.
+ * useTldrawSync provides save/load persistence for tldraw stores
+ * via the REST API (PUT/GET /api/canvases/:id/snapshot).
  *
  * How it works:
- *   1. When the tldraw store changes, we serialize changes to Yjs
- *   2. Yjs 'update' events (from remote) are applied to tldraw's store
- *   3. The full document snapshot is also stored in Yjs for reconnection
+ *   1. On mount, load the saved snapshot and apply it to the editor.
+ *   2. On store changes, debounce-save the full snapshot every 3 seconds.
+ *   3. Snapshot is stored in PostgreSQL via the api-server.
  */
 
 interface UseTldrawSyncOptions {
-  /** The shared Yjs document */
-  yDoc: Y.Doc;
-  /** Whether the WebSocket is connected */
-  connected: boolean;
-  /** Called when a full snapshot should be persisted */
-  onSnapshot?: (snapshot: TLStoreSnapshot) => void;
+  canvasId: string;
 }
 
-const SNAPSHOT_KEY = 'tldraw:snapshot';
-const MUTATIONS_KEY = 'tldraw:mutations';
-
-export function useTldrawSync({ yDoc, connected, onSnapshot }: UseTldrawSyncOptions) {
+export function useTldrawSync({ canvasId }: UseTldrawSyncOptions) {
   const editorRef = useRef<Editor | null>(null);
-  const appliedMutations = useRef(new Set<string>());
-  const snapshotTimer = useRef<ReturnType<typeof setInterval>>();
+  const saveTimer = useRef<ReturnType<typeof setTimeout>>();
+  const lastSaved = useRef<string>('');
 
-  /** Register the tldraw editor once mounted */
+  /** Save the current store snapshot to the server. */
+  const save = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const token = getAccessToken();
+    if (!token) return;
+
+    try {
+      const snapshot = editor.store.getStoreSnapshot();
+      const json = JSON.stringify(snapshot);
+
+      // Skip if nothing changed.
+      if (json === lastSaved.current) return;
+      lastSaved.current = json;
+
+      await fetch(`${BASE_URL}/canvases/${canvasId}/snapshot`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: json,
+      });
+    } catch {
+      // Silently retry on next change.
+    }
+  }, [canvasId]);
+
+  /** Load the saved snapshot from the server and apply to the editor. */
+  const load = useCallback(async () => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const token = getAccessToken();
+    if (!token) return;
+
+    try {
+      const res = await fetch(`${BASE_URL}/canvases/${canvasId}/snapshot`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await res.json();
+      if (body.code === 0 && body.data) {
+        editor.store.loadStoreSnapshot(body.data);
+        lastSaved.current = JSON.stringify(body.data);
+      }
+    } catch {
+      // Start with empty canvas if load fails.
+    }
+  }, [canvasId]);
+
+  /** Called by tldraw's onMount — registers the editor and loads saved data. */
   const onMount = useCallback(
     (editor: Editor) => {
       editorRef.current = editor;
 
-      // 1. Try to load existing snapshot from Yjs.
-      const snapshot = yDoc.getMap(SNAPSHOT_KEY).get('data') as TLStoreSnapshot | undefined;
-      if (snapshot) {
-        try {
-          editor.store.loadSnapshot(snapshot);
-        } catch (e) {
-          console.warn('[tldraw] failed to load snapshot from Yjs:', e);
-        }
-      }
+      // Load saved snapshot (if any).
+      load();
 
-      // 2. Listen for tldraw store changes and sync to Yjs.
+      // Listen for store changes and debounce-save.
       const unlisten = editor.store.listen(
-        ({ changes }) => {
-          // Skip if we're applying remote changes.
-          if (changes.source === 'remote') return;
-
-          // Update the full snapshot periodically (debounced by timer).
-          // For now, we just mark as dirty.
-
-          // Track mutation IDs to deduplicate.
-          const mutationId = `${Date.now()}-${Math.random()}`;
-          appliedMutations.current.add(mutationId);
-
-          // Push the change to the mutations Yjs array.
-          const mutations = yDoc.getArray(MUTATIONS_KEY);
-          mutations.push([{ id: mutationId, changes: JSON.parse(JSON.stringify(changes)) }]);
-
-          // Trim old mutations to prevent unbounded growth.
-          if (mutations.length > 500) {
-            mutations.delete(0, mutations.length - 300);
-          }
+        () => {
+          if (saveTimer.current) clearTimeout(saveTimer.current);
+          saveTimer.current = setTimeout(save, 3000);
         },
-        { source: 'user' },
+        { source: 'user', scope: 'document' },
       );
 
-      // 3. Listen for remote Yjs mutations and apply to tldraw.
-      const mutationObserver = (event: Y.YArrayEvent<unknown>) => {
-        // We process mutations that were added by other peers.
-        // The Yjs update handler already handles binary sync.
-        for (const delta of event.changes.delta) {
-          if (delta.insert) {
-            for (const item of delta.insert as Array<{ id: string; changes: unknown }>) {
-              if (!appliedMutations.current.has(item.id)) {
-                appliedMutations.current.add(item.id);
-                try {
-                  // Apply remote changes to the tldraw store.
-                  // This uses tldraw's store.mergeRemoteChanges or similar.
-                  editor.store.mergeRemoteChanges(() => {
-                    // In a real implementation, we'd reconstruct the store operations
-                    // from the serialized changes. For now, we use the snapshot approach.
-                  });
-                } catch {
-                  // Skip malformed changes
-                }
-              }
-            }
-          }
-        }
-      };
-
-      yDoc.getArray(MUTATIONS_KEY).observe(mutationObserver);
-
-      // 4. Periodic snapshot saving.
-      snapshotTimer.current = setInterval(() => {
-        const snap = editor.store.getSnapshot();
-        yDoc.getMap(SNAPSHOT_KEY).set('data', snap as unknown as Parameters<typeof yDoc.getMap>[0]);
-        onSnapshot?.(snap);
-      }, 5000);
+      // Save on page close / refresh.
+      const handleUnload = () => save();
+      window.addEventListener('beforeunload', handleUnload);
 
       return () => {
         unlisten();
-        yDoc.getArray(MUTATIONS_KEY).unobserve(mutationObserver);
-        if (snapshotTimer.current) clearInterval(snapshotTimer.current);
+        window.removeEventListener('beforeunload', handleUnload);
+        if (saveTimer.current) clearTimeout(saveTimer.current);
+        save();
       };
     },
-    // We intentionally use yDoc reference (stable across renders)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [connected],
+    [load, save],
   );
 
-  // Cleanup on unmount.
   useEffect(() => {
     return () => {
-      if (snapshotTimer.current) clearInterval(snapshotTimer.current);
+      if (saveTimer.current) clearTimeout(saveTimer.current);
     };
   }, []);
 
-  return { onMount };
+  return { onMount, save, load };
 }

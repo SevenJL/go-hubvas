@@ -108,6 +108,8 @@ func main() {
 	canvasHandler := handler.NewCanvasHandler(canvasAppSvc)
 	communityHandler := handler.NewCommunityHandler(communityAppSvc)
 	healthHandler := handler.NewHealthHandler(pool)
+	snapshotStore := postgres.NewSnapshotStore(pool)
+	snapshotHandler := handler.NewSnapshotHandler(snapshotStore)
 
 	rateLimiter := middleware.NewRateLimiter(100, 200)
 
@@ -119,6 +121,7 @@ func main() {
 		CanvasHandler:    canvasHandler,
 		CommunityHandler: communityHandler,
 		HealthHandler:    healthHandler,
+		SnapshotHandler:  snapshotHandler,
 		WSGateway:        nil, // WS server runs in separate process
 		TokenSvc:         jwtSvc,
 		RateLimiter:      rateLimiter,

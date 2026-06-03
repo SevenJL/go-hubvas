@@ -13,6 +13,7 @@ type RouterConfig struct {
 	CanvasHandler    *handler.CanvasHandler
 	CommunityHandler *handler.CommunityHandler
 	HealthHandler    *handler.HealthHandler
+	SnapshotHandler  *handler.SnapshotHandler
 	WSGateway        *ws.Gateway
 	TokenSvc         middleware.TokenValidator
 	RateLimiter      *middleware.RateLimiter
@@ -66,6 +67,10 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		api.POST("/canvases/:id/like", cfg.CommunityHandler.Like)
 		api.DELETE("/canvases/:id/like", cfg.CommunityHandler.Unlike)
 		api.POST("/canvases/:id/comments", cfg.CommunityHandler.PostComment)
+
+		// Snapshots (tldraw store persistence)
+		api.PUT("/canvases/:id/snapshot", cfg.SnapshotHandler.Save)
+		api.GET("/canvases/:id/snapshot", cfg.SnapshotHandler.Load)
 	}
 
 	// WebSocket (JWT via query param, verified in the gateway).

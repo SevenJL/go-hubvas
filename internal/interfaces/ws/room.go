@@ -45,7 +45,7 @@ func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotReposit
 
 	r := &Room{
 		domainRoom:   collaboration.NewRoom(id, nil),
-		inbound:      make(chan collaboration.Operation, 1024), // buffered to avoid blocking readers
+		inbound:      make(chan collaboration.Operation, 1024),
 		clients:      make(map[*Client]bool),
 		snapshotRepo: snapshotRepo,
 		ctx:          ctx,
@@ -59,13 +59,11 @@ func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotReposit
 }
 
 // processLoop is the single goroutine that serializes all operations on this Room.
-// It is the heart of the "single goroutine per room" concurrency model.
 func (r *Room) processLoop() {
 	for {
 		select {
 		case <-r.ctx.Done():
 			return
-
 		case op := <-r.inbound:
 			r.processOp(op)
 		}
@@ -73,6 +71,7 @@ func (r *Room) processLoop() {
 }
 
 // processOp validates, applies, and broadcasts a single operation.
+// Sync ops are broadcast as binary frames; all others as JSON text.
 func (r *Room) processOp(op collaboration.Operation) {
 	result, err := r.domainRoom.ProcessOp(op)
 	if err != nil {
@@ -85,36 +84,52 @@ func (r *Room) processOp(op collaboration.Operation) {
 		return // No broadcast needed
 	}
 
-	// Marshal the operation to JSON for broadcast.
-	msg := FromOperation(result.Operation)
-	data, err := json.Marshal(msg)
-	if err != nil {
-		log.Printf("[room %d] marshal error: %v", r.domainRoom.ID(), err)
-		return
+	// For sync operations, broadcast the raw binary payload directly.
+	// For all other operations, marshal to JSON first.
+	if result.Operation.Type == collaboration.OpSync && len(result.Operation.Payload) > 0 {
+		r.broadcastBinary(result.Operation.Payload, result)
+	} else {
+		msg := FromOperation(result.Operation)
+		data, err := json.Marshal(msg)
+		if err != nil {
+			log.Printf("[room %d] marshal error: %v", r.domainRoom.ID(), err)
+			return
+		}
+		r.broadcastText(data, result)
 	}
-
-	// Broadcast to the appropriate targets.
-	r.broadcast(data, result)
 }
 
-// broadcast sends the message to clients based on the broadcast target.
-func (r *Room) broadcast(data []byte, result *collaboration.BroadcastResult) {
+// broadcastText sends a JSON text message to clients.
+func (r *Room) broadcastText(data []byte, result *collaboration.BroadcastResult) {
 	switch result.Target {
 	case collaboration.BroadcastAll:
-		r.broadcastAll(data, result.ExcludeUserID)
-
+		r.broadcastAll(data, result.ExcludeUserID, false)
 	case collaboration.BroadcastOthers:
-		r.broadcastAll(data, result.ExcludeUserID)
-
+		r.broadcastAll(data, result.ExcludeUserID, false)
 	case collaboration.BroadcastSingle:
 		if result.TargetUserID != nil {
-			r.sendToClient(*result.TargetUserID, "")
+			r.sendToClient(*result.TargetUserID, data)
+		}
+	}
+}
+
+// broadcastBinary sends a binary frame to clients (for CRDT sync updates).
+func (r *Room) broadcastBinary(data []byte, result *collaboration.BroadcastResult) {
+	switch result.Target {
+	case collaboration.BroadcastAll:
+		r.broadcastAll(data, result.ExcludeUserID, true)
+	case collaboration.BroadcastOthers:
+		r.broadcastAll(data, result.ExcludeUserID, true)
+	case collaboration.BroadcastSingle:
+		if result.TargetUserID != nil {
+			r.sendBinaryToClient(*result.TargetUserID, data)
 		}
 	}
 }
 
 // broadcastAll sends data to all connected clients, optionally excluding one.
-func (r *Room) broadcastAll(data []byte, exclude *identity.UserID) {
+// If binary is true, data is sent as a binary WebSocket frame.
+func (r *Room) broadcastAll(data []byte, exclude *identity.UserID, binary bool) {
 	r.clientsMu.RLock()
 	defer r.clientsMu.RUnlock()
 
@@ -122,7 +137,22 @@ func (r *Room) broadcastAll(data []byte, exclude *identity.UserID) {
 		if exclude != nil && client.UserID == *exclude {
 			continue
 		}
-		client.Send(data)
+		if binary {
+			client.SendBinary(data)
+		} else {
+			client.Send(data)
+		}
+	}
+}
+
+// sendBinaryToClient sends a binary frame to a specific user.
+func (r *Room) sendBinaryToClient(userID identity.UserID, data []byte) {
+	r.clientsMu.RLock()
+	defer r.clientsMu.RUnlock()
+	for client := range r.clients {
+		if client.UserID == userID {
+			client.SendBinary(data)
+		}
 	}
 }
 
@@ -158,13 +188,13 @@ func (r *Room) sendToClient(userID identity.UserID, msg interface{}) {
 // Register adds a client to the room and wires its onRead callback
 // to the room's inbound channel.
 func (r *Room) Register(client *Client) {
-	// Wire the client's reads to the room's inbound channel.
 	client.onRead = func(op collaboration.Operation) {
 		select {
 		case r.inbound <- op:
 		case <-r.ctx.Done():
 		default:
-			log.Printf("[room %d] inbound full, dropping op from user %d", r.domainRoom.ID(), op.UserID)
+			log.Printf("[room %d] inbound full, dropping op from user %d",
+				r.domainRoom.ID(), op.UserID)
 		}
 	}
 
@@ -172,7 +202,6 @@ func (r *Room) Register(client *Client) {
 	r.clients[client] = true
 	r.clientsMu.Unlock()
 
-	// Add to the domain room.
 	r.domainRoom.Join(client.UserID, client.Username)
 
 	log.Printf("[room %d] user %d (%s) joined (total: %d)",
@@ -185,7 +214,6 @@ func (r *Room) Unregister(client *Client) {
 	delete(r.clients, client)
 	r.clientsMu.Unlock()
 
-	// Remove from the domain room.
 	r.domainRoom.Leave(client.UserID)
 
 	log.Printf("[room %d] user %d left (total: %d)",
