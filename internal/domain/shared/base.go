@@ -70,3 +70,10 @@ type EventBus interface {
 	Publish(event DomainEvent) error
 	Subscribe(eventName string, handler func(DomainEvent) error) error
 }
+
+// IDGenerator defines the contract for generating unique identifiers.
+// Each bounded context's application layer depends on this, with concrete
+// implementations in infrastructure (Snowflake, UUID, or DB sequences).
+type IDGenerator interface {
+	NextID() int64
+}

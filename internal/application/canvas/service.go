@@ -9,24 +9,18 @@ import (
 	"github.com/hubvas/internal/domain/shared"
 )
 
-// IDGenerator is a simple contract for generating unique IDs.
-// The real implementation uses PostgreSQL sequences or Snowflake.
-type IDGenerator interface {
-	NextID() int64
-}
-
 // CanvasApplicationService orchestrates canvas-related use cases.
 type CanvasApplicationService struct {
 	canvasRepo    canvasDomain.CanvasRepository
 	communityRepo communityDomain.CommunityRepository
-	idGen         IDGenerator
+	idGen         shared.IDGenerator
 }
 
 // NewCanvasApplicationService creates the application service.
 func NewCanvasApplicationService(
 	canvasRepo canvasDomain.CanvasRepository,
 	communityRepo communityDomain.CommunityRepository,
-	idGen IDGenerator,
+	idGen shared.IDGenerator,
 ) *CanvasApplicationService {
 	return &CanvasApplicationService{
 		canvasRepo:    canvasRepo,

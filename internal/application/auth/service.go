@@ -166,6 +166,32 @@ func (s *AuthApplicationService) Refresh(ctx context.Context, req RefreshRequest
 	}, nil
 }
 
+// UpdateProfile updates the user's profile fields (username, avatar).
+func (s *AuthApplicationService) UpdateProfile(ctx context.Context, userID identity.UserID, req UpdateProfileRequest) (*UserDTO, error) {
+	user, err := s.userRepo.FindByID(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	if req.AvatarURL != "" {
+		if err := user.SetAvatarURL(req.AvatarURL); err != nil {
+			return nil, err
+		}
+	}
+
+	if err := s.userRepo.Save(ctx, user); err != nil {
+		return nil, err
+	}
+
+	return &UserDTO{
+		ID:        int64(user.ID()),
+		Username:  user.Username(),
+		Email:     user.Email(),
+		AvatarURL: user.AvatarURL(),
+		CreatedAt: user.CreatedAt(),
+	}, nil
+}
+
 // GetUser retrieves a user by ID.
 func (s *AuthApplicationService) GetUser(ctx context.Context, userID identity.UserID) (*UserDTO, error) {
 	user, err := s.userRepo.FindByID(ctx, userID)

@@ -34,7 +34,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
             {user ? (
               <>
-                <Link to="/dashboard" className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100 transition-colors">
+                <Link to="/profile" className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm text-gray-600 hover:bg-gray-100 transition-colors">
                   <User size={16} />
                   <span className="hidden sm:inline">{user.username}</span>
                 </Link>

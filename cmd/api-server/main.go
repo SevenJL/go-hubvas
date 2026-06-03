@@ -108,8 +108,11 @@ func main() {
 	canvasHandler := handler.NewCanvasHandler(canvasAppSvc)
 	communityHandler := handler.NewCommunityHandler(communityAppSvc)
 	healthHandler := handler.NewHealthHandler(pool)
-	snapshotStore := postgres.NewSnapshotStore(pool)
-	snapshotHandler := handler.NewSnapshotHandler(snapshotStore)
+
+	// Snapshot: domain interface → infrastructure impl → application service → handler
+	snapshotRepo := postgres.NewSnapshotStore(pool)
+	snapshotAppSvc := appCanvas.NewSnapshotApplicationService(canvasRepo, snapshotRepo)
+	snapshotHandler := handler.NewSnapshotHandler(snapshotAppSvc)
 
 	rateLimiter := middleware.NewRateLimiter(100, 200)
 

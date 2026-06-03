@@ -69,6 +69,29 @@ func (h *AuthHandler) Refresh(c *gin.Context) {
 	response.OK(c, tokens)
 }
 
+// UpdateProfile handles PUT /api/auth/profile.
+func (h *AuthHandler) UpdateProfile(c *gin.Context) {
+	userIDVal, exists := c.Get("userID")
+	if !exists {
+		response.Unauthorized(c, "not authenticated")
+		return
+	}
+
+	var req auth.UpdateProfileRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	userID := userIDVal.(identity.UserID)
+	user, err := h.appSvc.UpdateProfile(c.Request.Context(), userID, req)
+	if err != nil {
+		response.Error(c, 400, "update_failed", err.Error())
+		return
+	}
+	response.OK(c, user)
+}
+
 // Me handles GET /api/auth/me.
 // The userID is injected by AuthMiddleware.
 func (h *AuthHandler) Me(c *gin.Context) {

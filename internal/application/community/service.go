@@ -13,19 +13,14 @@ import (
 type CommunityApplicationService struct {
 	communityRepo communityDomain.CommunityRepository
 	canvasRepo    canvasDomain.CanvasRepository
-	idGen         IDGenerator
-}
-
-// IDGenerator generates unique IDs for community entities.
-type IDGenerator interface {
-	NextID() int64
+	idGen         shared.IDGenerator
 }
 
 // NewCommunityApplicationService creates the application service.
 func NewCommunityApplicationService(
 	communityRepo communityDomain.CommunityRepository,
 	canvasRepo canvasDomain.CanvasRepository,
-	idGen IDGenerator,
+	idGen shared.IDGenerator,
 ) *CommunityApplicationService {
 	return &CommunityApplicationService{
 		communityRepo: communityRepo,

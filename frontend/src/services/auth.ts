@@ -47,4 +47,13 @@ export const authService = {
     }
     return res.data;
   },
+
+  /** Update the user profile (avatar URL). */
+  async updateProfile(input: { avatar_url?: string }): Promise<User> {
+    const res = await api.put<User>('/auth/profile', input);
+    if (res.code !== 0 || !res.data) {
+      throw new Error(res.message || 'Update failed');
+    }
+    return res.data;
+  },
 };

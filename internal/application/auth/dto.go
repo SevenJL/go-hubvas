@@ -37,6 +37,12 @@ type UserDTO struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// UpdateProfileRequest is the input DTO for updating user profile.
+type UpdateProfileRequest struct {
+	Username  string `json:"username"`
+	AvatarURL string `json:"avatar_url"`
+}
+
 // RegisterResponse is the combined response for registration (user + tokens auto-login).
 type RegisterResponse struct {
 	User   *UserDTO       `json:"user"`

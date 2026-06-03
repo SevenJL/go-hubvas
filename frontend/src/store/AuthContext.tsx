@@ -14,6 +14,8 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   /** Register a new account. Automatically logs in on success. Throws on failure. */
   register: (username: string, email: string, password: string) => Promise<void>;
+  /** Update the current user state (for profile changes). */
+  setUser: (user: User) => void;
   /** Log out and clear all tokens. */
   logout: () => void;
 }
@@ -72,7 +74,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, error, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, error, login, register, setUser, logout }}>
       {children}
     </AuthContext.Provider>
   );

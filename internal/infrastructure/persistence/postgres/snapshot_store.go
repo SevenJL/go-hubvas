@@ -2,14 +2,14 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/hubvas/internal/domain/canvas"
 )
 
-// SnapshotStore persists tldraw store snapshots in PostgreSQL.
-// Each canvas has one row in canvas_snapshots with its JSON snapshot.
+// SnapshotStore implements canvas.SnapshotRepository using PostgreSQL.
 type SnapshotStore struct {
 	pool *pgxpool.Pool
 }
@@ -19,13 +19,13 @@ func NewSnapshotStore(pool *pgxpool.Pool) *SnapshotStore {
 	return &SnapshotStore{pool: pool}
 }
 
-// SaveSnapshot upserts the snapshot for a canvas.
-func (s *SnapshotStore) SaveSnapshot(ctx context.Context, canvasID int64, data json.RawMessage) error {
+// Save persists a tldraw store JSON snapshot, upserting by canvas ID.
+func (s *SnapshotStore) Save(ctx context.Context, canvasID canvas.CanvasID, data []byte) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO canvas_snapshots (canvas_id, data, updated_at)
 		 VALUES ($1, $2, NOW())
 		 ON CONFLICT (canvas_id) DO UPDATE SET data = $2, updated_at = NOW()`,
-		canvasID, data,
+		int64(canvasID), data,
 	)
 	if err != nil {
 		return fmt.Errorf("save snapshot for canvas %d: %w", canvasID, err)
@@ -33,16 +33,17 @@ func (s *SnapshotStore) SaveSnapshot(ctx context.Context, canvasID int64, data j
 	return nil
 }
 
-// LoadSnapshot retrieves the snapshot for a canvas.
-// Returns nil, nil if no snapshot exists.
-func (s *SnapshotStore) LoadSnapshot(ctx context.Context, canvasID int64) (json.RawMessage, error) {
-	var data json.RawMessage
+// Load retrieves the snapshot for a canvas. Returns nil, nil if none exists.
+func (s *SnapshotStore) Load(ctx context.Context, canvasID canvas.CanvasID) ([]byte, error) {
+	var data []byte
 	err := s.pool.QueryRow(ctx,
-		`SELECT data FROM canvas_snapshots WHERE canvas_id = $1`, canvasID,
+		`SELECT data FROM canvas_snapshots WHERE canvas_id = $1`, int64(canvasID),
 	).Scan(&data)
 	if err != nil {
-		// No rows → no snapshot.
-		return nil, nil
+		return nil, nil // no rows → no snapshot
 	}
 	return data, nil
 }
+
+// Ensure it satisfies the domain interface.
+var _ canvas.SnapshotRepository = (*SnapshotStore)(nil)

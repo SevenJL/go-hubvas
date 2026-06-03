@@ -55,6 +55,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	{
 		// Auth
 		api.GET("/auth/me", cfg.AuthHandler.Me)
+		api.PUT("/auth/profile", cfg.AuthHandler.UpdateProfile)
 
 		// Canvases (write operations)
 		api.POST("/canvases", cfg.CanvasHandler.Create)
