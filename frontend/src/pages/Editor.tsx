@@ -8,33 +8,20 @@ import { useYjsProvider } from '../hooks/useYjsProvider';
 import { useTldrawSync } from '../hooks/useTldrawSync';
 import { useAuth } from '../store/AuthContext';
 import { Layout } from '../components/layout/Layout';
-import type { CanvasInfo } from '../types';
-import { ArrowLeft, Globe } from 'lucide-react';
 import { OnlineUsers } from '../components/canvas/OnlineUsers';
+import type { CanvasInfo } from '../types';
+import { ArrowLeft, Globe, EyeOff } from 'lucide-react';
 
-function RemoteCursors({
-  cursors,
-}: {
-  cursors: Map<number, { x: number; y: number; username: string; color: string }>;
-}) {
+function RemoteCursors({ cursors }: { cursors: Map<number, { x: number; y: number; username: string; color: string }> }) {
   if (cursors.size === 0) return null;
   return (
     <>
       {Array.from(cursors.entries()).map(([uid, pos]) => (
-        <div
-          key={uid}
-          className="absolute pointer-events-none"
-          style={{
-            left: pos.x, top: pos.y, zIndex: 1000,
-            transition: 'left 0.08s linear, top 0.08s linear',
-          }}
-        >
+        <div key={uid} className="absolute pointer-events-none" style={{ left: pos.x, top: pos.y, zIndex: 1000, transition: 'left 0.08s linear, top 0.08s linear' }}>
           <svg width="18" height="18" viewBox="0 0 18 18">
             <path d="M3 1l12 12l-5 1l-3 4l-2-1l3-5z" fill={pos.color} stroke="white" strokeWidth="0.5" />
           </svg>
-          <span className="text-[10px] text-white px-1.5 py-0.5 rounded ml-0.5 whitespace-nowrap" style={{ backgroundColor: pos.color }}>
-            {pos.username}
-          </span>
+          <span className="text-[10px] text-white px-1.5 py-0.5 rounded ml-0.5 whitespace-nowrap" style={{ backgroundColor: pos.color }}>{pos.username}</span>
         </div>
       ))}
     </>
@@ -54,102 +41,80 @@ export function Editor() {
     canvasService.get(canvasId).then(setCanvas).catch(err => setLoadError(err.message));
   }, [canvasId]);
 
-  // ---- WebSocket (awareness + real-time sync) ----
+  // Determine if current user can edit this canvas.
+  const canEdit = user && canvas
+    ? Number(canvas.owner_id) === Number(user.id)
+    : false;
+
+  // ---- WebSocket (awareness + real-time sync for editors) ----
   const token = getAccessToken() || '';
-
-  // We need applyRemoteSnapshot before useYjsProvider, so use a ref.
   const applyRemoteRef = useRef<(snapshot: unknown) => void>(() => {});
+  const handleSyncMessage = useCallback((payload: unknown) => { applyRemoteRef.current(payload); }, []);
 
-  const handleSyncMessage = useCallback((payload: unknown) => {
-    // Received a snapshot from another user via WebSocket.
-    applyRemoteRef.current(payload);
-  }, []);
-
-  const {
-    connected,
-    awareness,
-    onlineUsers,
-    sendAwareness,
-    sendTextMessage,
-  } = useYjsProvider({
+  const { connected, awareness, onlineUsers, sendAwareness, sendTextMessage } = useYjsProvider({
     canvasId, token,
     username: user?.username || 'Anonymous',
     userId: user?.id || '0',
     onSyncMessage: handleSyncMessage,
   });
 
-  // ---- tldraw persistence (REST save + WebSocket broadcast) ----
+  // ---- tldraw persistence (only for editors) ----
   const handleSnapshotSaved = useCallback((snapshot: unknown) => {
-    // After saving locally, broadcast to other users in the room.
     sendTextMessage('sync', snapshot);
   }, [sendTextMessage]);
 
-  const { onMount: onTldrawMount, applyRemoteSnapshot } = useTldrawSync({
-    canvasId,
-    onSnapshotSaved: handleSnapshotSaved,
-  });
+  const { onMount: onTldrawMount, applyRemoteSnapshot } = useTldrawSync(
+    canEdit ? { canvasId, onSnapshotSaved: handleSnapshotSaved } : { canvasId },
+  );
 
-  // Keep applyRemoteRef in sync so the WebSocket callback can find it.
-  useEffect(() => {
-    applyRemoteRef.current = applyRemoteSnapshot;
-  }, [applyRemoteSnapshot]);
+  useEffect(() => { applyRemoteRef.current = applyRemoteSnapshot; }, [applyRemoteSnapshot]);
 
-  // ---- Awareness (cursor tracking) ----
+  // ---- Awareness (cursor tracking — only for editors) ----
   const awarenessThrottle = useRef<number>(0);
   const sendAwarenessRef = useRef(sendAwareness);
   useEffect(() => { sendAwarenessRef.current = sendAwareness; }, [sendAwareness]);
 
-  const handleCursorMove = useCallback(
-    (cursor: { x: number; y: number } | null) => {
-      const now = Date.now();
-      if (now - awarenessThrottle.current < 40) return;
-      awarenessThrottle.current = now;
-      sendAwarenessRef.current(cursor);
-    }, [],
-  );
+  const handleCursorMove = useCallback((cursor: { x: number; y: number } | null) => {
+    if (!canEdit) return;
+    const now = Date.now();
+    if (now - awarenessThrottle.current < 40) return;
+    awarenessThrottle.current = now;
+    sendAwarenessRef.current(cursor);
+  }, [canEdit]);
 
+  // ---- Publish ----
   const handlePublish = async () => {
     if (!canvas || publishing) return;
     setPublishing(true);
-    try {
-      await canvasService.publish(canvas.id);
-      setCanvas({ ...canvas, visibility: 'published' });
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Publish failed');
-    } finally {
-      setPublishing(false);
-    }
+    try { await canvasService.publish(canvas.id); setCanvas({ ...canvas, visibility: 'published' }); }
+    catch (err) { setLoadError(err instanceof Error ? err.message : 'Publish failed'); }
+    finally { setPublishing(false); }
   };
 
+  // ---- Mount ----
   const handleMount = useCallback(
     (editor: Parameters<typeof onTldrawMount>[0]) => {
       onTldrawMount(editor);
 
-      const container = editor.getContainer();
-      const onPointerMove = (e: PointerEvent) => {
-        // Get container-relative coordinates (not viewport-relative).
-        const rect = container.getBoundingClientRect();
-        handleCursorMove({ x: e.clientX - rect.left, y: e.clientY - rect.top });
-      };
-      container.addEventListener('pointermove', onPointerMove);
+      // Read-only mode: prevent any editing.
+      if (!canEdit) {
+        editor.updateInstanceState({ isReadonly: true });
+      }
 
-      const origDispose = editor.dispose.bind(editor);
-      editor.dispose = () => {
-        container.removeEventListener('pointermove', onPointerMove);
-        origDispose();
-      };
+      // Pointer tracking for awareness (editors only).
+      if (canEdit) {
+        const container = editor.getContainer();
+        const onPointerMove = (e: PointerEvent) => handleCursorMove({ x: e.clientX - container.getBoundingClientRect().left, y: e.clientY - container.getBoundingClientRect().top });
+        container.addEventListener('pointermove', onPointerMove);
+        const origDispose = editor.dispose.bind(editor);
+        editor.dispose = () => { container.removeEventListener('pointermove', onPointerMove); origDispose(); };
+      }
     },
-    [onTldrawMount, handleCursorMove],
+    [onTldrawMount, handleCursorMove, canEdit],
   );
 
   if (!canvas) {
-    return (
-      <Layout>
-        <div className="max-w-5xl mx-auto px-4 py-8 text-center text-gray-400">
-          {loadError || 'Loading canvas...'}
-        </div>
-      </Layout>
-    );
+    return <Layout><div className="max-w-5xl mx-auto px-4 py-8 text-center text-gray-400">{loadError || 'Loading canvas...'}</div></Layout>;
   }
 
   return (
@@ -162,16 +127,19 @@ export function Editor() {
               <ArrowLeft size={20} />
             </Link>
             <h2 className="font-semibold text-gray-900 text-sm">{canvas.title}</h2>
-            {canvas.visibility !== 'published' && (
-              <button
-                onClick={handlePublish}
-                disabled={publishing}
-                className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium
-                           bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors
-                           disabled:opacity-50"
-              >
-                <Globe size={13} />
-                {publishing ? 'Publishing...' : 'Publish'}
+
+            {/* Read-only badge */}
+            {!canEdit && (
+              <span className="flex items-center gap-1 text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
+                <EyeOff size={12} /> Read-only
+              </span>
+            )}
+
+            {/* Publish button (owner only) */}
+            {canEdit && canvas.visibility !== 'published' && (
+              <button onClick={handlePublish} disabled={publishing}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors disabled:opacity-50">
+                <Globe size={13} /> {publishing ? 'Publishing...' : 'Publish'}
               </button>
             )}
             {canvas.visibility === 'published' && (
@@ -180,11 +148,8 @@ export function Editor() {
               </span>
             )}
           </div>
-          <OnlineUsers
-            users={onlineUsers}
-            connected={connected}
-            currentUsername={user?.username || 'You'}
-          />
+
+          <OnlineUsers users={onlineUsers} connected={connected} currentUsername={user?.username || 'You'} />
         </div>
 
         {/* tldraw canvas */}
