@@ -13,7 +13,6 @@ import (
 )
 
 // SnapshotHandler handles saving and loading canvas visual snapshots.
-// Routes through the application layer (not direct infrastructure access).
 type SnapshotHandler struct {
 	appSvc *canvas.SnapshotApplicationService
 }
@@ -41,8 +40,8 @@ func (h *SnapshotHandler) Save(c *gin.Context) {
 		return
 	}
 
-	userID := c.GetInt64("userID")
-	if err := h.appSvc.Save(c.Request.Context(), canvasDomain.CanvasID(canvasID), identity.UserID(userID), body); err != nil {
+	userID, _ := c.Get("userID")
+	if err := h.appSvc.Save(c.Request.Context(), canvasDomain.CanvasID(canvasID), userID.(identity.UserID), body); err != nil {
 		response.Error(c, 403, "save_failed", err.Error())
 		return
 	}
@@ -57,8 +56,8 @@ func (h *SnapshotHandler) Load(c *gin.Context) {
 		return
 	}
 
-	userID := c.GetInt64("userID")
-	data, err := h.appSvc.Load(c.Request.Context(), canvasDomain.CanvasID(canvasID), identity.UserID(userID))
+	userID, _ := c.Get("userID")
+	data, err := h.appSvc.Load(c.Request.Context(), canvasDomain.CanvasID(canvasID), userID.(identity.UserID))
 	if err != nil {
 		response.Error(c, 403, "load_failed", err.Error())
 		return

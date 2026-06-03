@@ -65,11 +65,15 @@ func main() {
 	pwdSvc := infAuth.NewBcryptPasswordService(cfg.Auth.BcryptCost)
 	permSvc := infAuth.NewCanvasPermissionService(canvasRepo)
 
+	// ---- Snapshot repository (needed by canvas app service) ----
+	snapshotRepo := postgres.NewSnapshotStore(pool)
+
 	// ---- Application: Use Cases ----
 	authAppSvc := auth.NewAuthApplicationService(userRepo, jwtSvc, pwdSvc)
 
 	canvasAppSvc := appCanvas.NewCanvasApplicationService(
 		canvasRepo,
+		snapshotRepo,
 		communityRepo,
 		&snowflakeIDAdapter{sf: idGen},
 	)
@@ -110,7 +114,6 @@ func main() {
 	healthHandler := handler.NewHealthHandler(pool)
 
 	// Snapshot: domain interface → infrastructure impl → application service → handler
-	snapshotRepo := postgres.NewSnapshotStore(pool)
 	snapshotAppSvc := appCanvas.NewSnapshotApplicationService(canvasRepo, snapshotRepo)
 	snapshotHandler := handler.NewSnapshotHandler(snapshotAppSvc)
 

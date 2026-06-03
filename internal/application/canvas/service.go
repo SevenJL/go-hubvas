@@ -11,21 +11,24 @@ import (
 
 // CanvasApplicationService orchestrates canvas-related use cases.
 type CanvasApplicationService struct {
-	canvasRepo    canvasDomain.CanvasRepository
+	canvasRepo   canvasDomain.CanvasRepository
+	snapshotRepo canvasDomain.SnapshotRepository
 	communityRepo communityDomain.CommunityRepository
-	idGen         shared.IDGenerator
+	idGen        shared.IDGenerator
 }
 
 // NewCanvasApplicationService creates the application service.
 func NewCanvasApplicationService(
 	canvasRepo canvasDomain.CanvasRepository,
+	snapshotRepo canvasDomain.SnapshotRepository,
 	communityRepo communityDomain.CommunityRepository,
 	idGen shared.IDGenerator,
 ) *CanvasApplicationService {
 	return &CanvasApplicationService{
-		canvasRepo:    canvasRepo,
+		canvasRepo:   canvasRepo,
+		snapshotRepo: snapshotRepo,
 		communityRepo: communityRepo,
-		idGen:         idGen,
+		idGen:        idGen,
 	}
 }
 
@@ -114,7 +117,7 @@ func (s *CanvasApplicationService) Publish(ctx context.Context, canvasID canvasD
 	return s.communityRepo.SavePublished(ctx, published)
 }
 
-// Fork creates a fork of the source canvas.
+// Fork creates a fork of the source canvas, including its visual snapshot.
 func (s *CanvasApplicationService) Fork(ctx context.Context, sourceID canvasDomain.CanvasID, userID identity.UserID) (*CanvasDTO, error) {
 	source, err := s.canvasRepo.FindByID(ctx, sourceID)
 	if err != nil {
@@ -129,6 +132,15 @@ func (s *CanvasApplicationService) Fork(ctx context.Context, sourceID canvasDoma
 
 	if err := s.canvasRepo.Save(ctx, fork); err != nil {
 		return nil, err
+	}
+
+	// Copy the source canvas's visual snapshot to the fork.
+	snapshot, err := s.snapshotRepo.Load(ctx, sourceID)
+	if err == nil && len(snapshot) > 0 {
+		if err := s.snapshotRepo.Save(ctx, newID, snapshot); err != nil {
+			// Best-effort: fork succeeds even if snapshot copy fails.
+			// The user can always start with a blank canvas.
+		}
 	}
 
 	return toCanvasDTO(fork, 0), nil
