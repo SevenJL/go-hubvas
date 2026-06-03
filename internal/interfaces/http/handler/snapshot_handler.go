@@ -60,6 +60,7 @@ func (h *SnapshotHandler) Save(c *gin.Context) {
 
 // Load handles GET /api/canvases/:id/snapshot.
 // Returns { "data": <tldraw JSON>, "thumbnail": "<base64 data URL or empty>" }
+// Load handles GET /api/canvases/:id/snapshot (public for published canvases).
 func (h *SnapshotHandler) Load(c *gin.Context) {
 	canvasID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
@@ -67,8 +68,13 @@ func (h *SnapshotHandler) Load(c *gin.Context) {
 		return
 	}
 
-	userID, _ := c.Get("userID")
-	data, thumbnail, err := h.appSvc.Load(c.Request.Context(), canvasDomain.CanvasID(canvasID), userID.(identity.UserID))
+	// Allow unauthenticated access for community thumbnails.
+	var userID identity.UserID
+	if v, ok := c.Get("userID"); ok {
+		userID = v.(identity.UserID)
+	}
+
+	data, thumbnail, err := h.appSvc.Load(c.Request.Context(), canvasDomain.CanvasID(canvasID), userID)
 	if err != nil {
 		response.Error(c, 403, "load_failed", err.Error())
 		return

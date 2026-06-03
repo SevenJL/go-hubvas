@@ -50,8 +50,7 @@ export function useTldrawSync({ canvasId, onSnapshotSaved }: UseTldrawSyncOption
         // Thumbnail generation is best-effort. Don't block save.
       }
 
-      console.log('[tldraw] saving...', { size: json.length, hasThumbnail: !!thumbnail });
-      await fetch(`${BASE_URL}/canvases/${canvasId}/snapshot`, {
+      const res = await fetch(`${BASE_URL}/canvases/${canvasId}/snapshot`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -59,7 +58,11 @@ export function useTldrawSync({ canvasId, onSnapshotSaved }: UseTldrawSyncOption
         },
         body: JSON.stringify({ data: JSON.parse(json), thumbnail }),
       });
-      console.log('[tldraw] saved');
+
+      if (!res.ok) {
+        if (res.status === 403) return; // read-only, silently skip
+        throw new Error(`Save failed: ${res.status}`);
+      }
 
       onSnapshotSaved?.(JSON.parse(json));
     } catch (e) {
@@ -101,17 +104,13 @@ export function useTldrawSync({ canvasId, onSnapshotSaved }: UseTldrawSyncOption
       // Response format: { data: <tldraw snapshot>, thumbnail: "<base64>" }
       const snapshot = body.data?.data || body.data;
       if (body.code === 0 && snapshot) {
-        console.log('[tldraw] loading saved snapshot...');
         editor.store.mergeRemoteChanges(() => {
           editor.store.loadStoreSnapshot(snapshot);
         });
         lastSaved.current = JSON.stringify(snapshot);
-        console.log('[tldraw] loaded');
-      } else {
-        console.log('[tldraw] no saved snapshot');
       }
-    } catch (e) {
-      console.error('[tldraw] load failed:', e);
+    } catch {
+      // Start with empty canvas if load fails.
     } finally {
       loaded.current = true;
     }

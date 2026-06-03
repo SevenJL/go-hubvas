@@ -47,6 +47,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	// Canvas detail — public (for published canvases).
 	r.GET("/api/canvases/:id", cfg.CanvasHandler.Get)
 	r.GET("/api/canvases/:id/comments", cfg.CommunityHandler.GetComments)
+	r.GET("/api/canvases/:id/snapshot", cfg.SnapshotHandler.Load)
 
 	// ---- Protected routes (JWT required) ----
 
@@ -69,9 +70,8 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		api.DELETE("/canvases/:id/like", cfg.CommunityHandler.Unlike)
 		api.POST("/canvases/:id/comments", cfg.CommunityHandler.PostComment)
 
-		// Snapshots (tldraw store persistence)
+		// Snapshots (save requires auth)
 		api.PUT("/canvases/:id/snapshot", cfg.SnapshotHandler.Save)
-		api.GET("/canvases/:id/snapshot", cfg.SnapshotHandler.Load)
 	}
 
 	// WebSocket (JWT via query param, verified in the gateway).

@@ -9,7 +9,7 @@ import { useTldrawSync } from '../hooks/useTldrawSync';
 import { useAuth } from '../store/AuthContext';
 import { Layout } from '../components/layout/Layout';
 import type { CanvasInfo } from '../types';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Globe } from 'lucide-react';
 import { OnlineUsers } from '../components/canvas/OnlineUsers';
 
 function RemoteCursors({
@@ -47,6 +47,7 @@ export function Editor() {
   const { user } = useAuth();
   const [canvas, setCanvas] = useState<CanvasInfo | null>(null);
   const [loadError, setLoadError] = useState('');
+  const [publishing, setPublishing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -107,6 +108,19 @@ export function Editor() {
     }, [],
   );
 
+  const handlePublish = async () => {
+    if (!canvas || publishing) return;
+    setPublishing(true);
+    try {
+      await canvasService.publish(canvas.id);
+      setCanvas({ ...canvas, visibility: 'published' });
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'Publish failed');
+    } finally {
+      setPublishing(false);
+    }
+  };
+
   const handleMount = useCallback(
     (editor: Parameters<typeof onTldrawMount>[0]) => {
       onTldrawMount(editor);
@@ -148,6 +162,23 @@ export function Editor() {
               <ArrowLeft size={20} />
             </Link>
             <h2 className="font-semibold text-gray-900 text-sm">{canvas.title}</h2>
+            {canvas.visibility !== 'published' && (
+              <button
+                onClick={handlePublish}
+                disabled={publishing}
+                className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium
+                           bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors
+                           disabled:opacity-50"
+              >
+                <Globe size={13} />
+                {publishing ? 'Publishing...' : 'Publish'}
+              </button>
+            )}
+            {canvas.visibility === 'published' && (
+              <span className="text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-1">
+                <Globe size={12} /> Published
+              </span>
+            )}
           </div>
           <OnlineUsers
             users={onlineUsers}
