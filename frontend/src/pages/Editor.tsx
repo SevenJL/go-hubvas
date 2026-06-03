@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Tldraw } from '@tldraw/tldraw';
+import type { TLComponents } from 'tldraw';
 import '@tldraw/tldraw/tldraw.css';
 import { canvasService } from '../services/canvas';
 import { getAccessToken } from '../services/api';
@@ -92,6 +93,12 @@ export function Editor() {
   };
 
   // ---- Mount ----
+  // Hide toolbar in read-only mode.
+  const tldrawComponents = useMemo<TLComponents>(
+    () => (canEdit ? {} : { Toolbar: null, StylePanel: null, QuickActions: null }),
+    [canEdit],
+  );
+
   const handleMount = useCallback(
     (editor: Parameters<typeof onTldrawMount>[0]) => {
       onTldrawMount(editor);
@@ -155,7 +162,7 @@ export function Editor() {
 
         {/* tldraw canvas */}
         <div className="flex-1 relative" ref={containerRef}>
-          <Tldraw onMount={handleMount} />
+          <Tldraw onMount={handleMount} components={tldrawComponents} />
           <RemoteCursors cursors={awareness} />
         </div>
       </div>
