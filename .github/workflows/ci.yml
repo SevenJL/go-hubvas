@@ -128,82 +128,89 @@ jobs:
           envs: WEB_HOST_PORT,PROJECT_DIR,REPO,BRANCH,GITHUB_TOKEN
           script_stop: true
           script: |
-            set -euo pipefail
-            export GIT_TERMINAL_PROMPT=0   # fail fast instead of hanging on auth prompts
+            # NOTE: set -e is intentionally OFF. Every command uses explicit
+            # `|| fail "..."` so failures always print a visible reason to
+            # stdout (drone-ssh does not reliably stream stderr).
+            set -uo pipefail
+            export GIT_TERMINAL_PROMPT=0   # never hang on credential prompts
+
+            fail() { echo "❌ ERROR: $*"; exit 1; }
+            step() { echo "==> $*"; }
 
             PROJECT_DIR="${PROJECT_DIR:-$HOME/go-hubvas}"
             COMPOSE_FILE="$PROJECT_DIR/deployments/docker/docker-compose.yaml"
             export WEB_HOST_PORT="${WEB_HOST_PORT:-6161}"
             BRANCH="${BRANCH:-main}"
 
-            # Authenticate with the GITHUB_TOKEN so private repos clone too.
-            # The token is short-lived (refreshed every deploy) and lives only
-            # on this server inside .git/config.
+            step "Project dir  : $PROJECT_DIR"
+            step "Web host port: $WEB_HOST_PORT"
+            step "Repository   : ${REPO} (branch ${BRANCH})"
+
+            # ---- 1. git ----
+            step "Checking git..."
+            if command -v git >/dev/null 2>&1; then
+              echo "    git present: $(git --version 2>&1)"
+            else
+              echo "    git MISSING — installing (Debian/Ubuntu)..."
+              if [ "$(id -u)" -eq 0 ]; then
+                { apt-get update -y && apt-get install -y git; } 2>&1 \
+                  || fail "apt-get install git failed"
+              else
+                { sudo -n apt-get update -y && sudo -n apt-get install -y git; } 2>&1 \
+                  || fail "sudo apt-get install git failed — need passwordless sudo (or install git manually)"
+              fi
+              command -v git >/dev/null 2>&1 \
+                || fail "git still unavailable — install manually: sudo apt-get install -y git"
+              echo "    git installed: $(git --version 2>&1)"
+            fi
+
+            # ---- 2. clone or pull ----
             if [ -n "${GITHUB_TOKEN:-}" ]; then
               REMOTE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+              AUTH="GITHUB_TOKEN"
             else
               REMOTE_URL="https://github.com/${REPO}.git"
+              AUTH="public HTTPS"
             fi
 
-            echo "==> Project dir  : $PROJECT_DIR"
-            echo "==> Web host port: $WEB_HOST_PORT"
-            echo "==> Repository   : ${REPO} (branch ${BRANCH})"
-
-            # Ensure git is installed (auto-install on Debian/Ubuntu if we can).
-            if ! command -v git >/dev/null 2>&1; then
-              echo "==> git not found — installing..."
-              if [ "$(id -u)" -eq 0 ]; then
-                apt-get update -y && apt-get install -y git
-              else
-                sudo -n apt-get update -y && sudo -n apt-get install -y git
-              fi
-            fi
-            if ! command -v git >/dev/null 2>&1; then
-              echo "ERROR: git is not installed on the server."
-              echo "       Install it manually, e.g.:"
-              echo "         Debian/Ubuntu: sudo apt-get install -y git"
-              echo "         RHEL/CentOS:  sudo dnf install -y git"
-              exit 1
-            fi
-
-            # Clone on first deploy, otherwise refresh the remote and pull.
             if [ ! -d "$PROJECT_DIR/.git" ]; then
-              echo "==> Repository not found — cloning ${REPO} (branch ${BRANCH})..."
-              if [ -n "${GITHUB_TOKEN:-}" ]; then
-                echo "    auth: GITHUB_TOKEN"
-              else
-                echo "    auth: public HTTPS (no token)"
-              fi
-              if ! git clone --branch "$BRANCH" "$REMOTE_URL" "$PROJECT_DIR"; then
-                echo "ERROR: git clone failed (see git message above)."
-                exit 1
-              fi
+              step "Cloning ${REPO} (${BRANCH}) via ${AUTH}..."
+              git clone --branch "$BRANCH" "$REMOTE_URL" "$PROJECT_DIR" 2>&1 \
+                || fail "git clone failed (see git output above)"
             else
-              git -C "$PROJECT_DIR" remote set-url origin "$REMOTE_URL"
+              git -C "$PROJECT_DIR" remote set-url origin "$REMOTE_URL" 2>&1 \
+                || fail "git remote set-url failed"
+              step "Checkout exists — updating..."
             fi
 
-            cd "$PROJECT_DIR"
+            cd "$PROJECT_DIR" || fail "cannot cd into $PROJECT_DIR"
 
-            echo "==> Pulling latest code (origin/${BRANCH})"
-            git fetch --prune origin "$BRANCH"
-            git reset --hard "origin/${BRANCH}"
+            step "Pulling latest code (origin/${BRANCH})"
+            git fetch --prune origin "$BRANCH" 2>&1 || fail "git fetch failed"
+            git reset --hard "origin/${BRANCH}" 2>&1 || fail "git reset failed"
 
-            echo "==> Building images (api, ws, web)"
+            # ---- 3. docker ----
+            step "Checking docker..."
+            command -v docker >/dev/null 2>&1 || fail "docker not installed on server"
+            docker compose version 2>&1 || fail "docker compose plugin not installed"
+
+            step "Building images (api, ws, web)"
             # Base compose only — the dev override is intentionally NOT loaded,
             # so infra/db ports stay internal in production.
-            docker compose -f "$COMPOSE_FILE" build --pull
+            docker compose -f "$COMPOSE_FILE" build --pull 2>&1 || fail "docker compose build failed"
 
-            echo "==> (Re)starting services"
-            docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+            step "(Re)starting services"
+            docker compose -f "$COMPOSE_FILE" up -d --remove-orphans 2>&1 || fail "docker compose up failed"
 
-            echo "==> Removing dangling images"
-            docker image prune -f || true
+            step "Pruning dangling images"
+            docker image prune -f 2>&1 || true
 
-            echo "==> Waiting for web health on :${WEB_HOST_PORT} (/health → api-server)"
+            # ---- 4. health ----
+            step "Waiting for web health on :${WEB_HOST_PORT} (/health → api-server)"
             healthy=0
             for i in $(seq 1 30); do
               if curl -fsS "http://127.0.0.1:${WEB_HOST_PORT}/health" >/dev/null 2>&1; then
-                echo "    Stack healthy (attempt $i)"
+                echo "    healthy (attempt $i)"
                 healthy=1
                 break
               fi
@@ -211,10 +218,10 @@ jobs:
             done
 
             if [ "$healthy" -ne 1 ]; then
-              echo "ERROR: stack did not become healthy within 60s — dumping logs"
-              docker compose -f "$COMPOSE_FILE" logs --tail=100 web api-server ws-server
+              echo "❌ Stack did not become healthy within 60s — dumping logs:"
+              docker compose -f "$COMPOSE_FILE" logs --tail=100 web api-server ws-server 2>&1 || true
               exit 1
             fi
 
-            echo "==> Deployment successful"
-            docker compose -f "$COMPOSE_FILE" ps
+            step "Deployment successful 🎉"
+            docker compose -f "$COMPOSE_FILE" ps 2>&1 || true
