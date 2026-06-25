@@ -86,7 +86,10 @@ export function useWebSocket({ canvasId, onMessage, onPresence, onError }: UseWe
 
   const sendSync = useCallback((update: Uint8Array) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(update.buffer as ArrayBuffer); // Binary frame.
+      // Yjs updates are always backed by a real ArrayBuffer at runtime
+      // (never SharedArrayBuffer), so narrowing the generic is safe and
+      // avoids allocating a copy per message.
+      wsRef.current.send(update as Uint8Array<ArrayBuffer>);
     }
   }, []);
 

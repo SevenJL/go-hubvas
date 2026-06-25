@@ -1,0 +1,24 @@
+# ---- Stage 1: build the frontend ----
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Install dependencies first for better layer caching.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+# Build the production bundle (outputs to /app/dist).
+COPY frontend/ ./
+RUN npm run build
+
+# ---- Stage 2: serve static files with nginx ----
+FROM nginx:1.27-alpine AS runtime
+
+# Replace the default site config.
+RUN rm /etc/nginx/conf.d/default.conf
+COPY deployments/docker/nginx.conf /etc/nginx/conf.d/default.conf
+
+# Built assets from stage 1.
+COPY --from=builder /app/dist /usr/share/nginx/html
+
+EXPOSE 80

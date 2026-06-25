@@ -1,11 +1,18 @@
-version: "3.9"
-
 # Hubvas — Collaborative Canvas Platform
-# Development / single-host deployment with all services.
+# Production-style single-host deployment.
 #
-# Usage:
-#   docker compose -f deployments/docker/docker-compose.yaml up -d
-#   docker compose -f deployments/docker/docker-compose.yaml down
+# Only the `web` (nginx) service is exposed publicly (default host port 6161).
+# API, WS, and all infrastructure services are internal to the compose network.
+#
+# Public entry point:  http://<host>:${WEB_HOST_PORT:-6161}
+#   /        → React SPA
+#   /api/    → api-server (REST)
+#   /ws      → ws-server  (WebSocket)
+#   /health  → api-server health
+#
+# Local dev that needs direct access to postgres/redis/etc. should use
+# docker-compose.override.yml (auto-loaded when running `docker compose up`
+# from this directory, or via `make docker-up`).
 
 services:
   # ---- PostgreSQL 15 — metadata & social data ----
@@ -14,10 +21,8 @@ services:
     container_name: hubvas-postgres
     environment:
       POSTGRES_USER: hubvas
-      POSTGRES_PASSWORD: hubvas
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-hubvas}
       POSTGRES_DB: hubvas
-    ports:
-      - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Auto-run migrations on first start.
@@ -33,8 +38,6 @@ services:
   redis:
     image: redis:7-alpine
     container_name: hubvas-redis
-    ports:
-      - "6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -47,9 +50,6 @@ services:
     image: nats:2-alpine
     container_name: hubvas-nats
     command: "-js"
-    ports:
-      - "4222:4222"
-      - "8222:8222" # monitoring
     healthcheck:
       test: ["CMD", "nats", "server", "check", "connection"]
       interval: 10s
@@ -63,11 +63,8 @@ services:
     container_name: hubvas-minio
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000" # S3 API
-      - "9001:9001" # Web console
+      MINIO_ROOT_USER: ${STORAGE_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${STORAGE_SECRET_KEY:-minioadmin}
     volumes:
       - miniodata:/data
     healthcheck:
@@ -86,7 +83,7 @@ services:
         condition: service_healthy
     entrypoint: |
       /bin/sh -c "
-      mc alias set local http://minio:9000 minioadmin minioadmin;
+      mc alias set local http://minio:9000 ${STORAGE_ACCESS_KEY:-minioadmin} ${STORAGE_SECRET_KEY:-minioadmin};
       mc mb --ignore-existing local/hubvas-snapshots;
       mc anonymous set private local/hubvas-snapshots;
       echo 'MinIO bucket ready';
@@ -103,21 +100,17 @@ services:
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_USER: hubvas
-      DB_PASSWORD: hubvas
+      DB_PASSWORD: ${DB_PASSWORD:-hubvas}
       DB_NAME: hubvas
       DB_SSLMODE: disable
-      JWT_ACCESS_SECRET: dev-access-secret-change-in-production
-      JWT_REFRESH_SECRET: dev-refresh-secret-change-in-production
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-in-production}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-in-production}
       REDIS_ADDR: redis:6379
       NATS_URL: nats://nats:4222
       STORAGE_ENDPOINT: minio:9000
-      STORAGE_ACCESS_KEY: minioadmin
-      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-minioadmin}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-minioadmin}
       STORAGE_BUCKET: hubvas-snapshots
-    ports:
-      # Host port is configurable via $API_HOST_PORT (default 8080 for dev).
-      # CI sets API_HOST_PORT=6161 so the server exposes the API on 6161.
-      - "${API_HOST_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -127,6 +120,12 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
     restart: unless-stopped
 
   # ---- WebSocket Server (real-time collaboration) ----
@@ -139,19 +138,17 @@ services:
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_USER: hubvas
-      DB_PASSWORD: hubvas
+      DB_PASSWORD: ${DB_PASSWORD:-hubvas}
       DB_NAME: hubvas
       DB_SSLMODE: disable
-      JWT_ACCESS_SECRET: dev-access-secret-change-in-production
-      JWT_REFRESH_SECRET: dev-refresh-secret-change-in-production
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:-dev-access-secret-change-in-production}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-dev-refresh-secret-change-in-production}
       REDIS_ADDR: redis:6379
       NATS_URL: nats://nats:4222
       STORAGE_ENDPOINT: minio:9000
-      STORAGE_ACCESS_KEY: minioadmin
-      STORAGE_SECRET_KEY: minioadmin
+      STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-minioadmin}
+      STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-minioadmin}
       STORAGE_BUCKET: hubvas-snapshots
-    ports:
-      - "8081:8081"
     depends_on:
       postgres:
         condition: service_healthy
@@ -161,6 +158,34 @@ services:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8081/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  # ---- Web (nginx) — the single public entry point ----
+  web:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.web
+    container_name: hubvas-web
+    ports:
+      # Host port configurable via $WEB_HOST_PORT (default 6161).
+      - "${WEB_HOST_PORT:-6161}:80"
+    depends_on:
+      api-server:
+        condition: service_healthy
+      ws-server:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     restart: unless-stopped
 
 volumes:

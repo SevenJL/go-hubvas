@@ -36,7 +36,7 @@ export function useYjsProvider({
   const wsRef = useRef<WebSocket | null>(null);
   const seqRef = useRef(0);
   const reconnectAttempt = useRef(0);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const onSyncMessageRef = useRef(onSyncMessage);
   onSyncMessageRef.current = onSyncMessage;
 
@@ -146,7 +146,7 @@ export function useYjsProvider({
     const handler = (update: Uint8Array, origin: unknown) => {
       if (origin === 'remote') return;
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(update.buffer);
+        wsRef.current.send(update as Uint8Array<ArrayBuffer>);
       }
     };
     doc.on('update', handler);
@@ -155,7 +155,7 @@ export function useYjsProvider({
 
   const sendSync = useCallback((update: Uint8Array) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(update.buffer);
+      wsRef.current.send(update as Uint8Array<ArrayBuffer>);
     }
   }, []);
 

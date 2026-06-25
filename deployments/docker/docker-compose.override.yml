@@ -1,0 +1,38 @@
+# Dev-only overrides.
+#
+# Re-exposes infrastructure and server ports to the host so local tools
+# (psql, redis-cli, the native `go run` dev servers, MinIO console, etc.)
+# can reach the services.
+#
+# Loading rules:
+#   - `docker compose up` run from THIS directory auto-loads this file.
+#   - `make docker-up` / `make docker-down` load it explicitly.
+#   - CI uses `-f docker-compose.yaml` only, so this file is NOT applied
+#     in production — ports stay internal.
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  nats:
+    ports:
+      - "4222:4222"
+      - "8222:8222" # monitoring
+
+  minio:
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web console
+
+  api-server:
+    ports:
+      - "8080:8080"
+
+  ws-server:
+    ports:
+      - "8081:8081"
