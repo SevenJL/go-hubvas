@@ -123,87 +123,118 @@ jobs:
             exit 1
           fi
 
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
+      - name: Configure SSH
         env:
-          WEB_HOST_PORT: ${{ env.WEB_HOST_PORT }}
-          PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
-          REPO: ${{ github.repository }}
-          BRANCH: ${{ github.ref_name }}
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Trust the server's host key so ssh won't prompt interactively.
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Run deploy on server
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          SSH_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
           GITHUB_TOKEN: ${{ github.token }}
           GHCR_USER: ${{ github.actor }}
-        with:
-          host: ${{ secrets.DEPLOY_HOST }}
-          username: ${{ secrets.DEPLOY_USER }}
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          port: "${{ secrets.DEPLOY_PORT || '22' }}"
-          envs: WEB_HOST_PORT,PROJECT_DIR,REPO,BRANCH,GITHUB_TOKEN,GHCR_USER
-          command_timeout: 10m   # server side is now fast (pull + up only)
-          script_stop: true
-          script: |
-            set -uo pipefail
-            fail() { echo "❌ ERROR: $*"; exit 1; }
-            step() { echo "==> $*"; }
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          WEB_HOST_PORT: ${{ env.WEB_HOST_PORT }}
+          PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
+        run: |
+          # Plain `ssh` (not drone-ssh) streams stdout/stderr in real time,
+          # so every step's output and any error message appear in full.
+          # Vars before `bash -s` become the remote script's environment;
+          # the quoted heredoc is sent to the remote bash untouched.
+          ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" \
+              -o StrictHostKeyChecking=accept-new \
+              "$SSH_USER@$SSH_HOST" \
+              GITHUB_TOKEN="$GITHUB_TOKEN" GHCR_USER="$GHCR_USER" \
+              REPO="$REPO" BRANCH="$BRANCH" \
+              WEB_HOST_PORT="$WEB_HOST_PORT" PROJECT_DIR="$PROJECT_DIR" \
+              bash -s <<'DEPLOY_SCRIPT'
+          set -uo pipefail
+          fail() { echo "❌ ERROR: $*"; exit 1; }
+          step() { echo "==> $*"; }
 
-            PROJECT_DIR="${PROJECT_DIR:-$HOME/go-hubvas}"
-            COMPOSE_FILE="$PROJECT_DIR/deployments/docker/docker-compose.yaml"
-            export WEB_HOST_PORT="${WEB_HOST_PORT:-6161}"
-            BRANCH="${BRANCH:-main}"
+          PROJECT_DIR="${PROJECT_DIR:-$HOME/go-hubvas}"
+          COMPOSE_FILE="$PROJECT_DIR/deployments/docker/docker-compose.yaml"
+          export WEB_HOST_PORT="${WEB_HOST_PORT:-6161}"
+          BRANCH="${BRANCH:-main}"
 
-            step "Project: $PROJECT_DIR | web port: $WEB_HOST_PORT | ${REPO}:${BRANCH}"
+          step "Project: $PROJECT_DIR | web port: $WEB_HOST_PORT | ${REPO}:${BRANCH}"
+          step "whoami: $(whoami) @ $(hostname)"
 
-            # ---- 1. tools ----
-            step "Checking tools..."
-            command -v git   >/dev/null 2>&1 || fail "git not installed: sudo apt-get install -y git"
-            command -v docker >/dev/null 2>&1 || fail "docker not installed"
-            docker compose version >/dev/null 2>&1 || fail "docker compose plugin missing"
+          # ---- 1. tools ----
+          step "Checking tools..."
+          if command -v git >/dev/null 2>&1; then
+            echo "    git: $(git --version)"
+          else
+            fail "git not installed — run: sudo apt-get install -y git"
+          fi
+          if command -v docker >/dev/null 2>&1; then
+            echo "    docker: $(docker --version)"
+          else
+            fail "docker not installed — see https://docs.docker.com/engine/install/"
+          fi
+          if docker compose version >/dev/null 2>&1; then
+            echo "    compose: $(docker compose version)"
+          else
+            fail "docker compose plugin missing"
+          fi
 
-            # ---- 2. repo (compose file + migrations) ----
-            if [ -n "${GITHUB_TOKEN:-}" ]; then
-              CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
-            else
-              CLONE_URL="https://github.com/${REPO}.git"
+          # ---- 2. repo (compose file + migrations) ----
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+          else
+            CLONE_URL="https://github.com/${REPO}.git"
+          fi
+          if [ ! -d "$PROJECT_DIR/.git" ]; then
+            step "Cloning ${REPO} (${BRANCH})..."
+            git clone --branch "$BRANCH" "$CLONE_URL" "$PROJECT_DIR" || fail "git clone failed"
+          else
+            step "Pulling latest code..."
+            git -C "$PROJECT_DIR" remote set-url origin "$CLONE_URL" || true
+            git -C "$PROJECT_DIR" fetch --prune origin "$BRANCH" || fail "git fetch failed"
+            git -C "$PROJECT_DIR" reset --hard "origin/${BRANCH}" || fail "git reset failed"
+          fi
+
+          # ---- 3. login to GHCR (ephemeral token, logged out after) ----
+          step "Logging into GHCR..."
+          echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin \
+            || fail "docker login to ghcr.io failed"
+
+          # ---- 4. pull fresh images + restart ----
+          step "Pulling images..."
+          docker compose -f "$COMPOSE_FILE" pull || fail "docker compose pull failed"
+
+          step "Starting services..."
+          docker compose -f "$COMPOSE_FILE" up -d --remove-orphans || fail "docker compose up failed"
+
+          docker logout ghcr.io >/dev/null 2>&1 || true
+
+          # ---- 5. health ----
+          step "Waiting for health on :${WEB_HOST_PORT} (/health → api-server)"
+          healthy=0
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${WEB_HOST_PORT}/health" >/dev/null 2>&1; then
+              echo "    healthy (attempt $i)"
+              healthy=1
+              break
             fi
-            if [ ! -d "$PROJECT_DIR/.git" ]; then
-              step "Cloning ${REPO} (${BRANCH})..."
-              git clone --branch "$BRANCH" "$CLONE_URL" "$PROJECT_DIR" 2>&1 || fail "git clone failed"
-            else
-              step "Pulling latest code..."
-              git -C "$PROJECT_DIR" remote set-url origin "$CLONE_URL" 2>&1 || true
-              git -C "$PROJECT_DIR" fetch --prune origin "$BRANCH" 2>&1 || fail "git fetch failed"
-              git -C "$PROJECT_DIR" reset --hard "origin/${BRANCH}" 2>&1 || fail "git reset failed"
-            fi
+            sleep 2
+          done
+          if [ "$healthy" -ne 1 ]; then
+            echo "❌ Stack did not become healthy — dumping logs:"
+            docker compose -f "$COMPOSE_FILE" logs --tail=100 web api-server ws-server || true
+            exit 1
+          fi
 
-            # ---- 3. login to GHCR (ephemeral token, logged out after) ----
-            step "Logging into GHCR..."
-            echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin 2>&1 \
-              || fail "docker login to ghcr.io failed"
-
-            # ---- 4. pull fresh images + restart ----
-            step "Pulling images..."
-            docker compose -f "$COMPOSE_FILE" pull 2>&1 || fail "docker compose pull failed"
-
-            step "Starting services..."
-            docker compose -f "$COMPOSE_FILE" up -d --remove-orphans 2>&1 || fail "docker compose up failed"
-
-            docker logout ghcr.io >/dev/null 2>&1 || true
-
-            # ---- 5. health ----
-            step "Waiting for health on :${WEB_HOST_PORT} (/health → api-server)"
-            healthy=0
-            for i in $(seq 1 30); do
-              if curl -fsS "http://127.0.0.1:${WEB_HOST_PORT}/health" >/dev/null 2>&1; then
-                echo "    healthy (attempt $i)"
-                healthy=1
-                break
-              fi
-              sleep 2
-            done
-            if [ "$healthy" -ne 1 ]; then
-              echo "❌ Stack did not become healthy — dumping logs:"
-              docker compose -f "$COMPOSE_FILE" logs --tail=100 web api-server ws-server 2>&1 || true
-              exit 1
-            fi
-
-            step "Deployment successful 🎉"
-            docker compose -f "$COMPOSE_FILE" ps 2>&1 || true
+          step "Deployment successful 🎉"
+          docker compose -f "$COMPOSE_FILE" ps || true
+          DEPLOY_SCRIPT
