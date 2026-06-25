@@ -149,10 +149,35 @@ jobs:
             echo "==> Web host port: $WEB_HOST_PORT"
             echo "==> Repository   : ${REPO} (branch ${BRANCH})"
 
+            # Ensure git is installed (auto-install on Debian/Ubuntu if we can).
+            if ! command -v git >/dev/null 2>&1; then
+              echo "==> git not found — installing..."
+              if [ "$(id -u)" -eq 0 ]; then
+                apt-get update -y && apt-get install -y git
+              else
+                sudo -n apt-get update -y && sudo -n apt-get install -y git
+              fi
+            fi
+            if ! command -v git >/dev/null 2>&1; then
+              echo "ERROR: git is not installed on the server."
+              echo "       Install it manually, e.g.:"
+              echo "         Debian/Ubuntu: sudo apt-get install -y git"
+              echo "         RHEL/CentOS:  sudo dnf install -y git"
+              exit 1
+            fi
+
             # Clone on first deploy, otherwise refresh the remote and pull.
             if [ ! -d "$PROJECT_DIR/.git" ]; then
-              echo "==> Repository not found — cloning..."
-              git clone --branch "$BRANCH" "$REMOTE_URL" "$PROJECT_DIR"
+              echo "==> Repository not found — cloning ${REPO} (branch ${BRANCH})..."
+              if [ -n "${GITHUB_TOKEN:-}" ]; then
+                echo "    auth: GITHUB_TOKEN"
+              else
+                echo "    auth: public HTTPS (no token)"
+              fi
+              if ! git clone --branch "$BRANCH" "$REMOTE_URL" "$PROJECT_DIR"; then
+                echo "ERROR: git clone failed (see git message above)."
+                exit 1
+              fi
             else
               git -C "$PROJECT_DIR" remote set-url origin "$REMOTE_URL"
             fi
