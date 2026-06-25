@@ -92,9 +92,7 @@ services:
 
   # ---- API Server (REST) ----
   api-server:
-    build:
-      context: ../..
-      dockerfile: deployments/docker/Dockerfile.api
+    image: ghcr.io/sevenjl/go-hubvas-api:latest
     container_name: hubvas-api
     environment:
       DB_HOST: postgres
@@ -130,9 +128,7 @@ services:
 
   # ---- WebSocket Server (real-time collaboration) ----
   ws-server:
-    build:
-      context: ../..
-      dockerfile: deployments/docker/Dockerfile.ws
+    image: ghcr.io/sevenjl/go-hubvas-ws:latest
     container_name: hubvas-ws
     environment:
       DB_HOST: postgres
@@ -168,9 +164,7 @@ services:
 
   # ---- Web (nginx) — the single public entry point ----
   web:
-    build:
-      context: ../..
-      dockerfile: deployments/docker/Dockerfile.web
+    image: ghcr.io/sevenjl/go-hubvas-web:latest
     container_name: hubvas-web
     ports:
       # Host port configurable via $WEB_HOST_PORT (default 6161).

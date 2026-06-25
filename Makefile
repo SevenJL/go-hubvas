@@ -57,9 +57,9 @@ docker-build:
 	docker build -t hubvas-api:latest -f deployments/docker/Dockerfile.api .
 	docker build -t hubvas-ws:latest -f deployments/docker/Dockerfile.ws .
 
-## docker-up: Start services with Docker Compose (dev — includes port overrides)
+## docker-up: Start services with Docker Compose (dev — build from source + port overrides)
 docker-up:
-	docker compose -f deployments/docker/docker-compose.yaml -f deployments/docker/docker-compose.override.yml up -d
+	docker compose -f deployments/docker/docker-compose.yaml -f deployments/docker/docker-compose.override.yml up -d --build
 
 ## docker-down: Stop Docker Compose services
 docker-down:

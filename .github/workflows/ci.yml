@@ -1,16 +1,8 @@
 name: CI / Deploy
 
-# Build, test, and deploy Hubvas (frontend + backend) to a self-hosted server.
-# - Push/PR to any branch  -> lint + test (Go + frontend)
-# - Push to main (or manual) -> deploy the full stack, reachable on port 6161
-#
-# Architecture on the server:
-#   nginx (web) :6161  →  public entry point
-#     /        → React SPA
-#     /api/    → api-server (REST)
-#     /ws      → ws-server  (WebSocket)
-#     /health  → api-server health
-#   Everything else (api/ws/postgres/redis/nats/minio) is internal-only.
+# Build images on GitHub runners, push to GHCR, then the server just pulls.
+# This keeps the SSH command short (pull + up, ~30s) and avoids the
+# timeout/output-buffering problems of building on the server.
 
 on:
   push:
@@ -19,12 +11,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# The auto-provided GITHUB_TOKEN only needs to read the repo (for cloning
-# onto the server). Explicit is safer than relying on org defaults.
 permissions:
   contents: read
+  packages: write   # push images to GHCR
 
-# Queue deploys per-ref instead of running them in parallel.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: false
@@ -33,44 +23,36 @@ env:
   GO_VERSION: "1.25"
   NODE_VERSION: "20"
   WEB_HOST_PORT: "6161"
+  # GHCR requires lowercase paths. Owner SevenJL -> sevenjl.
+  IMAGE_PREFIX: ghcr.io/sevenjl/go-hubvas
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Job 1 — Lint, build, and test (runs on every push and PR).
+  # 1. Lint & test (every push / PR).
   # ---------------------------------------------------------------------------
   test:
     name: Lint & Test
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/setup-go@v5
         with:
           go-version: ${{ env.GO_VERSION }}
           cache: true
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Download Go modules
-        run: go mod download
-
-      - name: Go vet
-        run: go vet ./...
-
-      - name: Build binaries
-        run: |
+      - run: go mod download
+      - run: go vet ./...
+      - run: |
           go build ./cmd/api-server
           go build ./cmd/ws-server
-
-      - name: Run tests (race detector)
-        run: go test -race -count=1 ./...
+      - run: go test -race -count=1 ./...
 
       - name: Frontend — install
         working-directory: frontend
@@ -81,23 +63,52 @@ jobs:
         run: npm run build
 
   # ---------------------------------------------------------------------------
-  # Job 2 — Deploy to the self-hosted server (only on main).
-  #
-  # Required GitHub secrets:
-  #   DEPLOY_HOST        Server IP or hostname (e.g. 203.0.113.10)
-  #   DEPLOY_USER        SSH user with docker access (e.g. deploy)
-  #   DEPLOY_SSH_KEY     Private key (contents of ~/.ssh/id_ed25519)
-  # Optional secrets:
-  #   DEPLOY_PORT        SSH port (default 22)
-  #   DEPLOY_PROJECT_DIR Repo path on the server (default ~/go-hubvas)
-  #
-  # Server prerequisites (one-time):
-  #   - Docker + Docker Compose plugin installed
-  #   - Repo cloned at DEPLOY_PROJECT_DIR with `origin` pointing to GitHub
+  # 2. Build & push images to GHCR (main only). Three images in parallel.
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build & Push ${{ matrix.service }}
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { service: api, dockerfile: deployments/docker/Dockerfile.api }
+          - { service: ws,  dockerfile: deployments/docker/Dockerfile.ws  }
+          - { service: web, dockerfile: deployments/docker/Dockerfile.web }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:latest
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # 3. Deploy (main only). Pull fresh images on the server and restart.
+  #    Requires GitHub secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY.
+  #    Optional: DEPLOY_PORT (default 22), DEPLOY_PROJECT_DIR (default ~/go-hubvas).
   # ---------------------------------------------------------------------------
   deploy:
     name: Deploy to Server
-    needs: test
+    needs: build-and-push
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
@@ -120,21 +131,17 @@ jobs:
           REPO: ${{ github.repository }}
           BRANCH: ${{ github.ref_name }}
           GITHUB_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: "${{ secrets.DEPLOY_PORT || '22' }}"
-          envs: WEB_HOST_PORT,PROJECT_DIR,REPO,BRANCH,GITHUB_TOKEN
-          command_timeout: 30m   # default is 10s — too short for clone + docker build
+          envs: WEB_HOST_PORT,PROJECT_DIR,REPO,BRANCH,GITHUB_TOKEN,GHCR_USER
+          command_timeout: 10m   # server side is now fast (pull + up only)
           script_stop: true
           script: |
-            # NOTE: set -e is intentionally OFF. Every command uses explicit
-            # `|| fail "..."` so failures always print a visible reason to
-            # stdout (drone-ssh does not reliably stream stderr).
             set -uo pipefail
-            export GIT_TERMINAL_PROMPT=0   # never hang on credential prompts
-
             fail() { echo "❌ ERROR: $*"; exit 1; }
             step() { echo "==> $*"; }
 
@@ -143,71 +150,46 @@ jobs:
             export WEB_HOST_PORT="${WEB_HOST_PORT:-6161}"
             BRANCH="${BRANCH:-main}"
 
-            step "Project dir  : $PROJECT_DIR"
-            step "Web host port: $WEB_HOST_PORT"
-            step "Repository   : ${REPO} (branch ${BRANCH})"
+            step "Project: $PROJECT_DIR | web port: $WEB_HOST_PORT | ${REPO}:${BRANCH}"
 
-            # ---- 1. git ----
-            step "Checking git..."
-            if command -v git >/dev/null 2>&1; then
-              echo "    git present: $(git --version 2>&1)"
-            else
-              echo "    git MISSING — installing (Debian/Ubuntu)..."
-              if [ "$(id -u)" -eq 0 ]; then
-                { apt-get update -y && apt-get install -y git; } 2>&1 \
-                  || fail "apt-get install git failed"
-              else
-                { sudo -n apt-get update -y && sudo -n apt-get install -y git; } 2>&1 \
-                  || fail "sudo apt-get install git failed — need passwordless sudo (or install git manually)"
-              fi
-              command -v git >/dev/null 2>&1 \
-                || fail "git still unavailable — install manually: sudo apt-get install -y git"
-              echo "    git installed: $(git --version 2>&1)"
-            fi
+            # ---- 1. tools ----
+            step "Checking tools..."
+            command -v git   >/dev/null 2>&1 || fail "git not installed: sudo apt-get install -y git"
+            command -v docker >/dev/null 2>&1 || fail "docker not installed"
+            docker compose version >/dev/null 2>&1 || fail "docker compose plugin missing"
 
-            # ---- 2. clone or pull ----
+            # ---- 2. repo (compose file + migrations) ----
             if [ -n "${GITHUB_TOKEN:-}" ]; then
-              REMOTE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
-              AUTH="GITHUB_TOKEN"
+              CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
             else
-              REMOTE_URL="https://github.com/${REPO}.git"
-              AUTH="public HTTPS"
+              CLONE_URL="https://github.com/${REPO}.git"
             fi
-
             if [ ! -d "$PROJECT_DIR/.git" ]; then
-              step "Cloning ${REPO} (${BRANCH}) via ${AUTH}..."
-              git clone --branch "$BRANCH" "$REMOTE_URL" "$PROJECT_DIR" 2>&1 \
-                || fail "git clone failed (see git output above)"
+              step "Cloning ${REPO} (${BRANCH})..."
+              git clone --branch "$BRANCH" "$CLONE_URL" "$PROJECT_DIR" 2>&1 || fail "git clone failed"
             else
-              git -C "$PROJECT_DIR" remote set-url origin "$REMOTE_URL" 2>&1 \
-                || fail "git remote set-url failed"
-              step "Checkout exists — updating..."
+              step "Pulling latest code..."
+              git -C "$PROJECT_DIR" remote set-url origin "$CLONE_URL" 2>&1 || true
+              git -C "$PROJECT_DIR" fetch --prune origin "$BRANCH" 2>&1 || fail "git fetch failed"
+              git -C "$PROJECT_DIR" reset --hard "origin/${BRANCH}" 2>&1 || fail "git reset failed"
             fi
 
-            cd "$PROJECT_DIR" || fail "cannot cd into $PROJECT_DIR"
+            # ---- 3. login to GHCR (ephemeral token, logged out after) ----
+            step "Logging into GHCR..."
+            echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin 2>&1 \
+              || fail "docker login to ghcr.io failed"
 
-            step "Pulling latest code (origin/${BRANCH})"
-            git fetch --prune origin "$BRANCH" 2>&1 || fail "git fetch failed"
-            git reset --hard "origin/${BRANCH}" 2>&1 || fail "git reset failed"
+            # ---- 4. pull fresh images + restart ----
+            step "Pulling images..."
+            docker compose -f "$COMPOSE_FILE" pull 2>&1 || fail "docker compose pull failed"
 
-            # ---- 3. docker ----
-            step "Checking docker..."
-            command -v docker >/dev/null 2>&1 || fail "docker not installed on server"
-            docker compose version 2>&1 || fail "docker compose plugin not installed"
-
-            step "Building images (api, ws, web)"
-            # Base compose only — the dev override is intentionally NOT loaded,
-            # so infra/db ports stay internal in production.
-            docker compose -f "$COMPOSE_FILE" build --pull 2>&1 || fail "docker compose build failed"
-
-            step "(Re)starting services"
+            step "Starting services..."
             docker compose -f "$COMPOSE_FILE" up -d --remove-orphans 2>&1 || fail "docker compose up failed"
 
-            step "Pruning dangling images"
-            docker image prune -f 2>&1 || true
+            docker logout ghcr.io >/dev/null 2>&1 || true
 
-            # ---- 4. health ----
-            step "Waiting for web health on :${WEB_HOST_PORT} (/health → api-server)"
+            # ---- 5. health ----
+            step "Waiting for health on :${WEB_HOST_PORT} (/health → api-server)"
             healthy=0
             for i in $(seq 1 30); do
               if curl -fsS "http://127.0.0.1:${WEB_HOST_PORT}/health" >/dev/null 2>&1; then
@@ -217,9 +199,8 @@ jobs:
               fi
               sleep 2
             done
-
             if [ "$healthy" -ne 1 ]; then
-              echo "❌ Stack did not become healthy within 60s — dumping logs:"
+              echo "❌ Stack did not become healthy — dumping logs:"
               docker compose -f "$COMPOSE_FILE" logs --tail=100 web api-server ws-server 2>&1 || true
               exit 1
             fi
