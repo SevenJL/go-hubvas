@@ -19,6 +19,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# The auto-provided GITHUB_TOKEN only needs to read the repo (for cloning
+# onto the server). Explicit is safer than relying on org defaults.
+permissions:
+  contents: read
+
 # Queue deploys per-ref instead of running them in parallel.
 concurrency:
   group: ci-${{ github.ref }}
@@ -112,35 +117,51 @@ jobs:
         env:
           WEB_HOST_PORT: ${{ env.WEB_HOST_PORT }}
           PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ github.token }}
         with:
           host: ${{ secrets.DEPLOY_HOST }}
           username: ${{ secrets.DEPLOY_USER }}
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           port: "${{ secrets.DEPLOY_PORT || '22' }}"
-          envs: WEB_HOST_PORT,PROJECT_DIR
+          envs: WEB_HOST_PORT,PROJECT_DIR,REPO,BRANCH,GITHUB_TOKEN
           script_stop: true
           script: |
             set -euo pipefail
+            export GIT_TERMINAL_PROMPT=0   # fail fast instead of hanging on auth prompts
 
             PROJECT_DIR="${PROJECT_DIR:-$HOME/go-hubvas}"
             COMPOSE_FILE="$PROJECT_DIR/deployments/docker/docker-compose.yaml"
             export WEB_HOST_PORT="${WEB_HOST_PORT:-6161}"
+            BRANCH="${BRANCH:-main}"
+
+            # Authenticate with the GITHUB_TOKEN so private repos clone too.
+            # The token is short-lived (refreshed every deploy) and lives only
+            # on this server inside .git/config.
+            if [ -n "${GITHUB_TOKEN:-}" ]; then
+              REMOTE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+            else
+              REMOTE_URL="https://github.com/${REPO}.git"
+            fi
 
             echo "==> Project dir  : $PROJECT_DIR"
             echo "==> Web host port: $WEB_HOST_PORT"
+            echo "==> Repository   : ${REPO} (branch ${BRANCH})"
 
+            # Clone on first deploy, otherwise refresh the remote and pull.
             if [ ! -d "$PROJECT_DIR/.git" ]; then
-              echo "ERROR: repository not found at $PROJECT_DIR"
-              echo "       Run once on the server:"
-              echo "         git clone https://github.com/${{ github.repository }}.git $PROJECT_DIR"
-              exit 1
+              echo "==> Repository not found — cloning..."
+              git clone --branch "$BRANCH" "$REMOTE_URL" "$PROJECT_DIR"
+            else
+              git -C "$PROJECT_DIR" remote set-url origin "$REMOTE_URL"
             fi
 
             cd "$PROJECT_DIR"
 
-            echo "==> Pulling latest code (origin/main)"
-            git fetch --prune origin
-            git reset --hard origin/main
+            echo "==> Pulling latest code (origin/${BRANCH})"
+            git fetch --prune origin "$BRANCH"
+            git reset --hard "origin/${BRANCH}"
 
             echo "==> Building images (api, ws, web)"
             # Base compose only — the dev override is intentionally NOT loaded,
