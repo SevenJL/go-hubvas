@@ -1,0 +1,164 @@
+name: CI / Deploy
+
+# Build, test, and deploy Hubvas to a self-hosted server.
+# - Push/PR to any branch  -> lint + test
+# - Push to main (or manual) -> deploy to the server, API reachable on port 6161
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Queue deploys per-ref instead of running them in parallel.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.25"
+  NODE_VERSION: "20"
+  API_HOST_PORT: "6161"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1 — Lint, build, and test (runs on every push and PR).
+  # ---------------------------------------------------------------------------
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Download Go modules
+        run: go mod download
+
+      - name: Go vet
+        run: go vet ./...
+
+      - name: Build binaries
+        run: |
+          go build ./cmd/api-server
+          go build ./cmd/ws-server
+
+      - name: Run tests (race detector)
+        run: go test -race -count=1 ./...
+
+      - name: Frontend — install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend — build
+        working-directory: frontend
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # Job 2 — Deploy to the self-hosted server (only on main).
+  #
+  # Required GitHub secrets:
+  #   DEPLOY_HOST        Server IP or hostname (e.g. 203.0.113.10)
+  #   DEPLOY_USER        SSH user with docker access (e.g. deploy)
+  #   DEPLOY_SSH_KEY     Private key (contents of ~/.ssh/id_ed25519)
+  # Optional secrets:
+  #   DEPLOY_PORT        SSH port (default 22)
+  #   DEPLOY_PROJECT_DIR Repo path on the server (default ~/go-hubvas)
+  #
+  # Server prerequisites (one-time):
+  #   - Docker + Docker Compose plugin installed
+  #   - Repo cloned at DEPLOY_PROJECT_DIR with `origin` pointing to GitHub
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to Server
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate deploy secrets
+        run: |
+          missing=()
+          [ -z "${{ secrets.DEPLOY_HOST }}" ]     && missing+=("DEPLOY_HOST")
+          [ -z "${{ secrets.DEPLOY_USER }}" ]     && missing+=("DEPLOY_USER")
+          [ -z "${{ secrets.DEPLOY_SSH_KEY }}" ]  && missing+=("DEPLOY_SSH_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          API_HOST_PORT: ${{ env.API_HOST_PORT }}
+          PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          port: "${{ secrets.DEPLOY_PORT || '22' }}"
+          envs: API_HOST_PORT,PROJECT_DIR
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            PROJECT_DIR="${PROJECT_DIR:-$HOME/go-hubvas}"
+            COMPOSE_FILE="$PROJECT_DIR/deployments/docker/docker-compose.yaml"
+            export API_HOST_PORT="${API_HOST_PORT:-6161}"
+
+            echo "==> Project dir  : $PROJECT_DIR"
+            echo "==> API host port: $API_HOST_PORT"
+
+            if [ ! -d "$PROJECT_DIR/.git" ]; then
+              echo "ERROR: repository not found at $PROJECT_DIR"
+              echo "       Run once on the server:"
+              echo "         git clone https://github.com/${{ github.repository }}.git $PROJECT_DIR"
+              exit 1
+            fi
+
+            cd "$PROJECT_DIR"
+
+            echo "==> Pulling latest code (origin/main)"
+            git fetch --prune origin
+            git reset --hard origin/main
+
+            echo "==> Building images"
+            docker compose -f "$COMPOSE_FILE" build --pull
+
+            echo "==> (Re)starting services"
+            docker compose -f "$COMPOSE_FILE" up -d --remove-orphans
+
+            echo "==> Removing dangling images"
+            docker image prune -f || true
+
+            echo "==> Waiting for API health on :${API_HOST_PORT} (/health)"
+            healthy=0
+            for i in $(seq 1 30); do
+              if curl -fsS "http://127.0.0.1:${API_HOST_PORT}/health" >/dev/null 2>&1; then
+                echo "    API healthy (attempt $i)"
+                healthy=1
+                break
+              fi
+              sleep 2
+            done
+
+            if [ "$healthy" -ne 1 ]; then
+              echo "ERROR: API did not become healthy within 60s — dumping logs"
+              docker compose -f "$COMPOSE_FILE" logs --tail=100 api-server
+              exit 1
+            fi
+
+            echo "==> Deployment successful"
+            docker compose -f "$COMPOSE_FILE" ps

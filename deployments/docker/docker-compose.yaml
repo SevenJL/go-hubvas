@@ -115,7 +115,9 @@ services:
       STORAGE_SECRET_KEY: minioadmin
       STORAGE_BUCKET: hubvas-snapshots
     ports:
-      - "8080:8080"
+      # Host port is configurable via $API_HOST_PORT (default 8080 for dev).
+      # CI sets API_HOST_PORT=6161 so the server exposes the API on 6161.
+      - "${API_HOST_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
