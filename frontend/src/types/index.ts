@@ -37,6 +37,7 @@ export interface CanvasInfo {
   forked_from?: string;
   member_count: number;
   online_count: number;
+  current_role?: 'owner' | 'editor' | 'viewer' | 'commenter';
   created_at: string;
   updated_at: string;
 }

@@ -21,12 +21,19 @@ import (
 //	the result to all connected clients' send channels.
 //
 //	This serial design eliminates the need for locks on canvas state.
+type clientOperation struct {
+	op     collaboration.Operation
+	source *Client
+}
+
 type Room struct {
 	domainRoom *collaboration.Room // domain aggregate
 	domainMu   sync.Mutex
 
-	// inbound queues local client operations; remoteInbound receives NATS fan-out.
+	// inbound is retained for tests/internal producers; clientInbound preserves
+	// the exact sender connection so another tab for the same user still syncs.
 	inbound       chan collaboration.Operation
+	clientInbound chan clientOperation
 	remoteInbound chan collaboration.Operation
 
 	// clients is the set of connected WebSocket clients.
@@ -54,6 +61,7 @@ func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotReposit
 		domainRoom:    collaboration.NewRoom(id, cloneBytes(initialSnapshot)),
 		snapshot:      cloneBytes(initialSnapshot),
 		inbound:       make(chan collaboration.Operation, 1024),
+		clientInbound: make(chan clientOperation, 1024),
 		remoteInbound: make(chan collaboration.Operation, 1024),
 		clients:       make(map[*Client]bool),
 		snapshotRepo:  snapshotRepo,
@@ -82,6 +90,8 @@ func (r *Room) processLoop() {
 			return
 		case op := <-r.inbound:
 			r.processOp(op, true)
+		case item := <-r.clientInbound:
+			r.processOpFrom(item.op, true, item.source)
 		case op := <-r.remoteInbound:
 			r.processOp(op, false)
 		}
@@ -90,6 +100,10 @@ func (r *Room) processLoop() {
 
 // processOp validates, applies, and broadcasts a single operation.
 func (r *Room) processOp(op collaboration.Operation, publish bool) {
+	r.processOpFrom(op, publish, nil)
+}
+
+func (r *Room) processOpFrom(op collaboration.Operation, publish bool, source *Client) {
 	if !publish && op.Type == collaboration.OpPresence {
 		r.broadcastPresence()
 		return
@@ -106,17 +120,8 @@ func (r *Room) processOp(op collaboration.Operation, publish bool) {
 	if result == nil {
 		return
 	}
-	if result.Operation.Type == collaboration.OpSync {
-		r.setSnapshot(mergePersistedSnapshot(r.Snapshot(), result.Operation.Payload))
-	}
-	if result.Operation.Type == collaboration.OpAwareness {
-		r.updatePresenceFromAwareness(result.Operation)
-	}
-	if publish && r.pubsub != nil {
-		if err := r.pubsub.Publish(r.domainRoom.ID(), result.Operation); err != nil {
-			log.Printf("[room %d] failed to publish operation: %v", r.domainRoom.ID(), err)
-		}
-	}
+	// Broadcast on the local node before persistence and external I/O. This keeps
+	// pointer/brush updates off the Redis, NATS, and snapshot critical path.
 
 	// Sync operations received as binary frames (Yjs CRDT) → broadcast as binary.
 	// Sync operations received as text frames (JSON snapshot) → broadcast as text.
@@ -130,10 +135,10 @@ func (r *Room) processOp(op collaboration.Operation, publish bool) {
 				log.Printf("[room %d] marshal error: %v", r.domainRoom.ID(), err)
 				return
 			}
-			r.broadcastText(data, result)
+			r.broadcastText(data, result, source)
 		} else {
 			// Binary CRDT sync — broadcast as binary.
-			r.broadcastBinary(result.Operation.Payload, result)
+			r.broadcastBinary(result.Operation.Payload, result, source)
 		}
 	} else {
 		msg := FromOperation(result.Operation)
@@ -142,17 +147,26 @@ func (r *Room) processOp(op collaboration.Operation, publish bool) {
 			log.Printf("[room %d] marshal error: %v", r.domainRoom.ID(), err)
 			return
 		}
-		r.broadcastText(data, result)
+		r.broadcastText(data, result, source)
+	}
+
+	if publish && r.pubsub != nil {
+		if err := r.pubsub.Publish(r.domainRoom.ID(), result.Operation); err != nil {
+			log.Printf("[room %d] failed to publish operation: %v", r.domainRoom.ID(), err)
+		}
+	}
+	if result.Operation.Type == collaboration.OpSync && !isRealtimeTldrawDiff(result.Operation.Payload) {
+		r.mergeSnapshot(result.Operation.Payload)
 	}
 }
 
 // broadcastText sends a JSON text message to clients.
-func (r *Room) broadcastText(data []byte, result *collaboration.BroadcastResult) {
+func (r *Room) broadcastText(data []byte, result *collaboration.BroadcastResult, source *Client) {
 	switch result.Target {
 	case collaboration.BroadcastAll:
-		r.broadcastAll(data, result.ExcludeUserID, false)
+		r.broadcastAll(data, source, false)
 	case collaboration.BroadcastOthers:
-		r.broadcastAll(data, result.ExcludeUserID, false)
+		r.broadcastAll(data, source, false)
 	case collaboration.BroadcastSingle:
 		if result.TargetUserID != nil {
 			r.sendToClient(*result.TargetUserID, data)
@@ -161,12 +175,12 @@ func (r *Room) broadcastText(data []byte, result *collaboration.BroadcastResult)
 }
 
 // broadcastBinary sends a binary frame to clients (for CRDT sync updates).
-func (r *Room) broadcastBinary(data []byte, result *collaboration.BroadcastResult) {
+func (r *Room) broadcastBinary(data []byte, result *collaboration.BroadcastResult, source *Client) {
 	switch result.Target {
 	case collaboration.BroadcastAll:
-		r.broadcastAll(data, result.ExcludeUserID, true)
+		r.broadcastAll(data, source, true)
 	case collaboration.BroadcastOthers:
-		r.broadcastAll(data, result.ExcludeUserID, true)
+		r.broadcastAll(data, source, true)
 	case collaboration.BroadcastSingle:
 		if result.TargetUserID != nil {
 			r.sendBinaryToClient(*result.TargetUserID, data)
@@ -176,12 +190,12 @@ func (r *Room) broadcastBinary(data []byte, result *collaboration.BroadcastResul
 
 // broadcastAll sends data to all connected clients, optionally excluding one.
 // If binary is true, data is sent as a binary WebSocket frame.
-func (r *Room) broadcastAll(data []byte, exclude *identity.UserID, binary bool) {
+func (r *Room) broadcastAll(data []byte, exclude *Client, binary bool) {
 	r.clientsMu.RLock()
 	defer r.clientsMu.RUnlock()
 
 	for client := range r.clients {
-		if exclude != nil && client.UserID == *exclude {
+		if client == exclude {
 			continue
 		}
 		if binary {
@@ -237,7 +251,7 @@ func (r *Room) sendToClient(userID identity.UserID, msg interface{}) {
 func (r *Room) Register(client *Client) {
 	client.onRead = func(op collaboration.Operation) {
 		select {
-		case r.inbound <- op:
+		case r.clientInbound <- clientOperation{op: op, source: client}:
 		case <-r.ctx.Done():
 		default:
 			log.Printf("[room %d] inbound full, dropping op from user %d",
@@ -284,6 +298,12 @@ func (r *Room) sendInitialSnapshot(client *Client) {
 	for _, frame := range frames {
 		client.SendBinary(frame)
 	}
+}
+
+func (r *Room) mergeSnapshot(update []byte) {
+	r.snapshotMu.Lock()
+	r.snapshot = mergePersistedSnapshot(r.snapshot, update)
+	r.snapshotMu.Unlock()
 }
 
 func (r *Room) setSnapshot(data []byte) {

@@ -44,7 +44,8 @@ export function Editor() {
 
   // Determine if current user can edit this canvas.
   const canEdit = user && canvas
-    ? Number(canvas.owner_id) === Number(user.id)
+    ? canvas.current_role === 'owner' || canvas.current_role === 'editor'
+      || Number(canvas.owner_id) === Number(user.id)
     : false;
 
   // ---- WebSocket (awareness + real-time sync for editors) ----
@@ -63,9 +64,14 @@ export function Editor() {
   const handleSnapshotSaved = useCallback((snapshot: unknown) => {
     sendTextMessage('sync', snapshot);
   }, [sendTextMessage]);
+  const handleRealtimeChange = useCallback((batch: unknown) => {
+    sendTextMessage('sync', batch);
+  }, [sendTextMessage]);
 
   const { onMount: onTldrawMount, applyRemoteSnapshot } = useTldrawSync(
-    canEdit ? { canvasId, onSnapshotSaved: handleSnapshotSaved } : { canvasId },
+    canEdit
+      ? { canvasId, onSnapshotSaved: handleSnapshotSaved, onRealtimeChange: handleRealtimeChange }
+      : { canvasId },
   );
 
   useEffect(() => { applyRemoteRef.current = applyRemoteSnapshot; }, [applyRemoteSnapshot]);
@@ -78,7 +84,7 @@ export function Editor() {
   const handleCursorMove = useCallback((cursor: { x: number; y: number } | null) => {
     if (!canEdit) return;
     const now = Date.now();
-    if (now - awarenessThrottle.current < 40) return;
+    if (now - awarenessThrottle.current < 24) return;
     awarenessThrottle.current = now;
     sendAwarenessRef.current(cursor);
   }, [canEdit]);

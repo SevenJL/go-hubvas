@@ -193,3 +193,15 @@ func TestThrottleService_CleanupRefillsIdleLimiter(t *testing.T) {
 		t.Fatal("idle limiter should be removed after refilling")
 	}
 }
+
+func TestThrottleService_RealtimeLimiterCapacity(t *testing.T) {
+	svc := NewThrottleService()
+	syncLimiter := svc.newOpLimiter(collaboration.OpSync)
+	if syncLimiter.rate < 120 || syncLimiter.burst < 240 {
+		t.Fatalf("sync limiter is too restrictive for frame batches: rate=%v burst=%v", syncLimiter.rate, syncLimiter.burst)
+	}
+	awarenessLimiter := svc.newOpLimiter(collaboration.OpAwareness)
+	if awarenessLimiter.rate < 60 || awarenessLimiter.burst < 120 {
+		t.Fatalf("awareness limiter is too restrictive for smooth cursors: rate=%v burst=%v", awarenessLimiter.rate, awarenessLimiter.burst)
+	}
+}

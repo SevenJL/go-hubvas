@@ -49,7 +49,9 @@ func (s *CanvasApplicationService) Create(ctx context.Context, ownerID identity.
 		return nil, err
 	}
 
-	return toCanvasDTO(c, 0), nil
+	dto := toCanvasDTO(c, 0)
+	dto.CurrentRole = canvasDomain.RoleOwner.String()
+	return dto, nil
 }
 
 // Get retrieves a canvas by ID if it is published or the requester is a member.
@@ -62,7 +64,11 @@ func (s *CanvasApplicationService) Get(ctx context.Context, id canvasDomain.Canv
 	if !c.Visibility().IsPublished() && !c.IsMember(requesterID) {
 		return nil, shared.NewDomainError(shared.ErrForbidden, "you do not have access to this canvas")
 	}
-	return toCanvasDTO(c, 0), nil
+	dto := toCanvasDTO(c, 0)
+	if role := c.GetRole(requesterID); role >= 0 {
+		dto.CurrentRole = role.String()
+	}
+	return dto, nil
 }
 
 // ListByOwner returns all canvases owned by a user.
@@ -74,6 +80,7 @@ func (s *CanvasApplicationService) ListByOwner(ctx context.Context, ownerID iden
 	dtos := make([]*CanvasDTO, len(canvases))
 	for i, c := range canvases {
 		dtos[i] = toCanvasDTO(c, 0)
+		dtos[i].CurrentRole = canvasDomain.RoleOwner.String()
 	}
 	return dtos, nil
 }
@@ -165,7 +172,9 @@ func (s *CanvasApplicationService) Fork(ctx context.Context, sourceID canvasDoma
 		}
 	}
 
-	return toCanvasDTO(fork, 0), nil
+	dto := toCanvasDTO(fork, 0)
+	dto.CurrentRole = canvasDomain.RoleOwner.String()
+	return dto, nil
 }
 
 // Delete removes a canvas. Only the owner can delete.

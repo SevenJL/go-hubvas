@@ -130,3 +130,30 @@ func TestRoomKeepsDomainMemberUntilLastLocalConnectionLeaves(t *testing.T) {
 		t.Fatal("domain member should be removed after the final local connection leaves")
 	}
 }
+
+func TestRoomExcludesOnlySendingConnection(t *testing.T) {
+	room := NewRoom(7, nil, nil, nil, nil)
+	defer room.Shutdown()
+
+	sender := &Client{UserID: 42, send: make(chan []byte, 1)}
+	sameUserOtherTab := &Client{UserID: 42, send: make(chan []byte, 1)}
+	room.clients[sender] = true
+	room.clients[sameUserOtherTab] = true
+
+	op := collaboration.Operation{
+		Type: collaboration.OpSync, UserID: 42, Seq: 1,
+		Payload: []byte(`{"kind":"tldraw-diff-v1","diffs":[]}`),
+	}
+	room.processOpFrom(op, true, sender)
+
+	select {
+	case <-sender.send:
+		t.Fatal("sending connection must not receive its own diff")
+	default:
+	}
+	select {
+	case <-sameUserOtherTab.send:
+	default:
+		t.Fatal("another connection for the same user must receive the diff")
+	}
+}

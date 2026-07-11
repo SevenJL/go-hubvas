@@ -18,15 +18,16 @@ type UpdateCanvasRequest struct {
 
 // CanvasDTO is the public representation of a canvas.
 type CanvasDTO struct {
-	ID          int64           `json:"id,string"`
-	OwnerID     int64           `json:"owner_id,string"`
-	Title       string          `json:"title"`
-	Visibility  string          `json:"visibility"`
-	ForkedFrom  *int64          `json:"forked_from,omitempty,string"`
-	MemberCount int             `json:"member_count"`
-	OnlineCount int             `json:"online_count"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	ID          int64     `json:"id,string"`
+	OwnerID     int64     `json:"owner_id,string"`
+	Title       string    `json:"title"`
+	Visibility  string    `json:"visibility"`
+	ForkedFrom  *int64    `json:"forked_from,omitempty,string"`
+	MemberCount int       `json:"member_count"`
+	OnlineCount int       `json:"online_count"`
+	CurrentRole string    `json:"current_role,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // MemberDTO represents a member's permission assignment.

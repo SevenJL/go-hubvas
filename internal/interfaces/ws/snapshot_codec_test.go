@@ -58,3 +58,21 @@ func TestMergePersistedSnapshotTreatsJSONScalarAsBinaryUpdate(t *testing.T) {
 		t.Fatalf("JSON-looking binary update was not preserved: %#v", frames)
 	}
 }
+
+func TestRealtimeTldrawDiffIsTransient(t *testing.T) {
+	if !isRealtimeTldrawDiff([]byte(`{"kind":"tldraw-diff-v1","diffs":[{"added":{}}]}`)) {
+		t.Fatal("expected realtime diff protocol to be detected")
+	}
+	if isRealtimeTldrawDiff([]byte(`{"store":{"kind":"tldraw-diff-v1"}}`)) {
+		t.Fatal("full snapshots must not be classified as transient diffs")
+	}
+}
+
+func BenchmarkMergePersistedSnapshotAppend(b *testing.B) {
+	snapshot := mergePersistedSnapshot(nil, bytes.Repeat([]byte{1}, 256))
+	update := bytes.Repeat([]byte{2}, 256)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		snapshot = mergePersistedSnapshot(snapshot, update)
+	}
+}

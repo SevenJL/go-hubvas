@@ -65,8 +65,8 @@ func (b *TokenBucket) isFull() bool {
 //   - Per room:  200 connections per second
 //
 // Operation limits:
-//   - sync:      60 ops/min per user per room
-//   - awareness: 60 ops/min per user per room (cursors are throttled client-side too)
+//   - sync:      120 ops/sec per user per room (animation-frame batches)
+//   - awareness: 60 ops/sec per user per room (cursors are throttled client-side too)
 //   - chat:      10 ops/min per user per room
 type ThrottleService struct {
 	mu sync.Mutex
@@ -150,11 +150,12 @@ func (s *ThrottleService) newOpLimiter(opType collaboration.OpType) *TokenBucket
 		// 10 chat messages per minute
 		return NewTokenBucket(10.0/60.0, 5)
 	case collaboration.OpAwareness:
-		// 60 awareness updates per minute
-		return NewTokenBucket(1, 30)
+		// Smooth cursors at up to 60 updates/second, with room for short bursts.
+		return NewTokenBucket(60, 120)
 	default:
-		// 60 sync ops per minute
-		return NewTokenBucket(1, 30)
+		// Realtime drawing diffs are batched once per animation frame. Leave
+		// headroom for high-refresh-rate devices and reconnect catch-up.
+		return NewTokenBucket(120, 240)
 	}
 }
 

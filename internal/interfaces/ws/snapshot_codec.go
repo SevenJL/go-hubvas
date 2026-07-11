@@ -20,11 +20,22 @@ func mergePersistedSnapshot(current, update []byte) []byte {
 		return cloneBytes(update)
 	}
 
-	frames, err := decodeYjsSnapshot(current)
-	if err != nil || isJSONSnapshot(current) {
-		frames = nil
+	// The normal hot path is an already-framed update log. Append one frame
+	// directly instead of decoding and re-encoding the complete history.
+	if bytes.HasPrefix(current, yjsSnapshotMagic) {
+		var length [4]byte
+		binary.BigEndian.PutUint32(length[:], uint32(len(update)))
+		current = append(current, length[:]...)
+		current = append(current, update...)
+		return current
 	}
-	frames = append(frames, cloneBytes(update))
+
+	// Empty, legacy raw, and JSON states are converted once.
+	frames := make([][]byte, 0, 2)
+	if len(current) > 0 && !isJSONSnapshot(current) {
+		frames = append(frames, current)
+	}
+	frames = append(frames, update)
 	return encodeYjsSnapshot(frames)
 }
 
@@ -77,4 +88,12 @@ func decodeYjsSnapshot(snapshot []byte) ([][]byte, error) {
 func isJSONSnapshot(data []byte) bool {
 	trimmed := bytes.TrimSpace(data)
 	return len(trimmed) > 0 && trimmed[0] == '{' && json.Valid(trimmed)
+}
+
+// isRealtimeTldrawDiff identifies the browser's animation-frame diff protocol.
+// These messages are ephemeral live updates; durable full snapshots continue to
+// arrive separately and must remain the only JSON state stored for cold replay.
+func isRealtimeTldrawDiff(data []byte) bool {
+	trimmed := bytes.TrimSpace(data)
+	return bytes.HasPrefix(trimmed, []byte(`{"kind":"tldraw-diff-v1","diffs":`))
 }
