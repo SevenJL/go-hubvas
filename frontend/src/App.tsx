@@ -7,10 +7,11 @@ import { Editor } from './pages/Editor';
 import { Community } from './pages/Community';
 import { CanvasDetail } from './pages/CanvasDetail';
 import { Profile } from './pages/Profile';
+import { PageLoader, ToastProvider } from './components/ui';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
-  if (loading) return <div className="min-h-screen flex items-center justify-center text-gray-400">Loading...</div>;
+  if (loading) return <PageLoader label="Restoring your session..." />;
   if (!user) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
@@ -55,9 +56,11 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <AppRoutes />
-      </AuthProvider>
+      <ToastProvider>
+        <AuthProvider>
+          <AppRoutes />
+        </AuthProvider>
+      </ToastProvider>
     </BrowserRouter>
   );
 }

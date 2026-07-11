@@ -1,54 +1,70 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { GitFork, Globe, Lock, Plus, Share2, Trash2, Users } from 'lucide-react';
 import { useAuth } from '../store/AuthContext';
 import { canvasService } from '../services/canvas';
 import { Layout } from '../components/layout/Layout';
+import { Button, CanvasGridSkeleton, ConfirmDialog, ErrorState, Input, Modal, useToast } from '../components/ui';
 import type { CanvasInfo } from '../types';
-import { Plus, Users, Globe, Lock, Trash2, GitFork, Share2 } from 'lucide-react';
 
-function CanvasGrid({ canvases, owned, onDelete, onFork, onPublish }: {
+interface CanvasGridProps {
   canvases: CanvasInfo[];
   owned: boolean;
-  onDelete: (id: string) => void;
-  onFork: (id: string) => void;
-  onPublish: (id: string) => void;
-}) {
+  busyId: string | null;
+  onDelete: (canvas: CanvasInfo) => void;
+  onFork: (canvas: CanvasInfo) => void;
+  onPublish: (canvas: CanvasInfo) => void;
+}
+
+function CanvasGrid({ canvases, owned, busyId, onDelete, onFork, onPublish }: CanvasGridProps) {
   if (canvases.length === 0) {
-    return <div className="card py-10 text-center text-sm text-gray-400">{owned ? 'No canvases yet' : 'No canvases have been shared with you'}</div>;
-  }
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-      {canvases.map(c => (
-        <div key={c.id} className="card p-4 group">
-          <Link to={`/canvas/${c.id}/edit`} className="block">
-            <div className="flex items-start justify-between gap-2">
-              <h3 className="font-semibold text-gray-900 truncate mb-2">{c.title}</h3>
-              {!owned && <span className="text-[10px] uppercase tracking-wide text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">{c.current_role}</span>}
-            </div>
-            <div className="flex items-center gap-3 text-xs text-gray-500">
-              <span className="flex items-center gap-1">
-                {c.visibility === 'published' ? <Globe size={14} /> : <Lock size={14} />}
-                {c.visibility}
-              </span>
-              <span className="flex items-center gap-1"><Users size={14} /> {c.member_count}</span>
-              {c.online_count > 0 && <span className="text-green-600">{c.online_count} online</span>}
-            </div>
-          </Link>
-          <div className="flex items-center gap-2 mt-3 pt-3 border-t border-gray-100 opacity-0 group-hover:opacity-100 transition-opacity">
-            {owned && c.visibility !== 'published' && (
-              <button onClick={() => onPublish(c.id)} className="text-xs text-indigo-600 hover:underline">Publish</button>
-            )}
-            <button onClick={() => onFork(c.id)} className="text-xs text-gray-500 hover:underline flex items-center gap-1">
-              <GitFork size={12} /> Fork
-            </button>
-            {owned && (
-              <button onClick={() => onDelete(c.id)} className="text-xs text-red-500 hover:underline flex items-center gap-1 ml-auto">
-                <Trash2 size={12} />
-              </button>
-            )}
-          </div>
+    return (
+      <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center">
+        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600">
+          {owned ? <Plus size={20} /> : <Share2 size={20} />}
         </div>
-      ))}
+        <p className="mt-3 text-sm font-medium text-slate-700">{owned ? 'No canvases yet' : 'Nothing shared with you yet'}</p>
+        <p className="mt-1 text-xs text-slate-400">{owned ? 'Create a canvas to start drawing with your team.' : 'Shared canvases will appear here automatically.'}</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {canvases.map(canvas => {
+        const busy = busyId === canvas.id;
+        return (
+          <article key={canvas.id} className="group rounded-xl border border-slate-200 bg-white p-4 shadow-sm transition-all hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-md">
+            <Link to={`/canvas/${canvas.id}/edit`} className="block">
+              <div className="flex items-start justify-between gap-2">
+                <h3 className="mb-2 truncate font-semibold text-slate-900">{canvas.title}</h3>
+                {!owned && <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-600">{canvas.current_role}</span>}
+              </div>
+              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+                <span className="flex items-center gap-1">
+                  {canvas.visibility === 'published' ? <Globe size={14} className="text-emerald-500" /> : <Lock size={14} />}
+                  {canvas.visibility}
+                </span>
+                <span className="flex items-center gap-1"><Users size={14} /> {canvas.member_count}</span>
+                {canvas.online_count > 0 && <span className="rounded-full bg-emerald-50 px-2 py-0.5 font-medium text-emerald-600">{canvas.online_count} online</span>}
+              </div>
+            </Link>
+            <div className="mt-3 flex min-h-8 items-center gap-2 border-t border-slate-100 pt-3 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+              {owned && canvas.visibility !== 'published' && (
+                <button disabled={busy} onClick={() => onPublish(canvas)} className="text-xs font-medium text-indigo-600 hover:text-indigo-800 disabled:opacity-40">Publish</button>
+              )}
+              <button disabled={busy} onClick={() => onFork(canvas)} className="flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-slate-800 disabled:opacity-40">
+                <GitFork size={12} /> Fork
+              </button>
+              {owned && (
+                <button disabled={busy} onClick={() => onDelete(canvas)} className="ml-auto rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-40" aria-label={`Delete ${canvas.title}`}>
+                  <Trash2 size={14} />
+                </button>
+              )}
+            </div>
+          </article>
+        );
+      })}
     </div>
   );
 }
@@ -56,96 +72,165 @@ function CanvasGrid({ canvases, owned, onDelete, onFork, onPublish }: {
 export function Dashboard() {
   const { user } = useAuth();
   const navigate = useNavigate();
+  const toast = useToast();
   const [canvases, setCanvases] = useState<CanvasInfo[]>([]);
   const [shared, setShared] = useState<CanvasInfo[]>([]);
   const [activeTab, setActiveTab] = useState<'owned' | 'shared'>('owned');
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [showCreate, setShowCreate] = useState(false);
   const [newTitle, setNewTitle] = useState('');
-  const [error, setError] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<CanvasInfo | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
 
-  const load = async () => {
-    setError('');
+  const load = useCallback(async () => {
+    setLoadError('');
+    setLoading(true);
     try {
       const [mine, sharedWithMe] = await Promise.all([canvasService.listMine(), canvasService.listShared()]);
       setCanvases(mine);
       setShared(sharedWithMe);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load canvases');
+      setLoadError(err instanceof Error ? err.message : 'Failed to load canvases');
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { void load(); }, []);
+  useEffect(() => { void load(); }, [load]);
 
   const handleCreate = async () => {
-    if (!newTitle.trim()) return;
+    const title = newTitle.trim();
+    if (!title || creating) return;
+    setCreating(true);
     try {
-      const c = await canvasService.create(newTitle.trim());
-      setCanvases(prev => [c, ...prev]);
+      const canvas = await canvasService.create(title);
+      setCanvases(prev => [canvas, ...prev]);
       setShowCreate(false);
       setNewTitle('');
-      navigate(`/canvas/${c.id}/edit`);
-    } catch (err) { setError(err instanceof Error ? err.message : 'Failed to create canvas'); }
+      toast.success({ title: 'Canvas created', message: `“${canvas.title}” is ready to edit.` });
+      navigate(`/canvas/${canvas.id}/edit`);
+    } catch (err) {
+      toast.error({ title: 'Could not create canvas', message: err instanceof Error ? err.message : 'Please try again.' });
+    } finally {
+      setCreating(false);
+    }
   };
 
-  const handleDelete = async (id: string) => {
-    if (!confirm('Delete this canvas?')) return;
-    try { await canvasService.delete(id); setCanvases(prev => prev.filter(c => c.id !== id)); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Failed to delete'); }
-  };
-
-  const handleFork = async (id: string) => {
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    setBusyId(deleteTarget.id);
     try {
-      const c = await canvasService.fork(id);
-      setCanvases(prev => [c, ...prev]);
-      navigate(`/canvas/${c.id}/edit`);
-    } catch (err) { setError(err instanceof Error ? err.message : 'Failed to fork'); }
+      await canvasService.delete(deleteTarget.id);
+      setCanvases(prev => prev.filter(canvas => canvas.id !== deleteTarget.id));
+      toast.success({ title: 'Canvas deleted', message: `“${deleteTarget.title}” was removed.` });
+      setDeleteTarget(null);
+    } catch (err) {
+      toast.error({ title: 'Delete failed', message: err instanceof Error ? err.message : 'Please try again.' });
+    } finally {
+      setBusyId(null);
+    }
   };
 
-  const handlePublish = async (id: string) => {
-    try { await canvasService.publish(id); await load(); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Failed to publish'); }
+  const handleFork = async (canvas: CanvasInfo) => {
+    setBusyId(canvas.id);
+    try {
+      const forked = await canvasService.fork(canvas.id);
+      setCanvases(prev => [forked, ...prev]);
+      toast.success({ title: 'Fork created', message: 'Opening your editable copy.' });
+      navigate(`/canvas/${forked.id}/edit`);
+    } catch (err) {
+      toast.error({ title: 'Fork failed', message: err instanceof Error ? err.message : 'Please try again.' });
+      setBusyId(null);
+    }
+  };
+
+  const handlePublish = async (canvas: CanvasInfo) => {
+    setBusyId(canvas.id);
+    try {
+      await canvasService.publish(canvas.id);
+      setCanvases(prev => prev.map(item => item.id === canvas.id ? { ...item, visibility: 'published' } : item));
+      toast.success({ title: 'Canvas published', message: `“${canvas.title}” is now visible in the community.` });
+    } catch (err) {
+      toast.error({ title: 'Publish failed', message: err instanceof Error ? err.message : 'Please try again.' });
+    } finally {
+      setBusyId(null);
+    }
   };
 
   return (
     <Layout>
-      <div className="max-w-5xl mx-auto px-4 py-8">
-        <div className="flex items-center justify-between mb-6">
+      <div className="mx-auto max-w-5xl px-4 py-8">
+        <div className="mb-6 flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Canvases</h1>
-            <p className="text-sm text-gray-500 mt-1">{user ? `Welcome, ${user.username}` : 'Loading...'}</p>
+            <h1 className="text-2xl font-bold text-slate-900">Canvases</h1>
+            <p className="mt-1 text-sm text-slate-500">{user ? `Welcome back, ${user.username}` : 'Your collaborative workspace'}</p>
           </div>
-          <button onClick={() => setShowCreate(true)} className="btn-primary flex items-center gap-2"><Plus size={18} /> New Canvas</button>
+          <Button onClick={() => setShowCreate(true)}><Plus size={18} /> New Canvas</Button>
         </div>
 
-        {error && <div className="mb-4 text-red-600 text-sm bg-red-50 px-3 py-2 rounded-lg">{error}</div>}
-        {showCreate && (
-          <div className="card p-4 mb-6">
-            <input type="text" className="input-field mb-3" placeholder="Canvas title..." value={newTitle}
-              onChange={e => setNewTitle(e.target.value)} onKeyDown={e => e.key === 'Enter' && void handleCreate()} autoFocus />
-            <div className="flex gap-2">
-              <button onClick={() => void handleCreate()} className="btn-primary text-sm" disabled={!newTitle.trim()}>Create</button>
-              <button onClick={() => setShowCreate(false)} className="btn-secondary text-sm">Cancel</button>
-            </div>
-          </div>
-        )}
-
-        <div className="flex gap-1 border-b border-gray-200 mb-5">
-          <button onClick={() => setActiveTab('owned')} className={`px-4 py-2 text-sm font-medium border-b-2 ${activeTab === 'owned' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500'}`}>
+        <div className="mb-5 flex gap-1 border-b border-slate-200">
+          <button onClick={() => setActiveTab('owned')} className={`border-b-2 px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'owned' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
             My canvases <span className="ml-1 text-xs">{canvases.length}</span>
           </button>
-          <button onClick={() => setActiveTab('shared')} className={`px-4 py-2 text-sm font-medium border-b-2 flex items-center gap-1.5 ${activeTab === 'shared' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-gray-500'}`}>
+          <button onClick={() => setActiveTab('shared')} className={`flex items-center gap-1.5 border-b-2 px-4 py-2 text-sm font-medium transition-colors ${activeTab === 'shared' ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
             <Share2 size={14} /> Shared with me <span className="text-xs">{shared.length}</span>
           </button>
         </div>
 
-        {loading ? <div className="text-center py-12 text-gray-400">Loading...</div> : (
-          <CanvasGrid canvases={activeTab === 'owned' ? canvases : shared} owned={activeTab === 'owned'}
-            onDelete={id => void handleDelete(id)} onFork={id => void handleFork(id)} onPublish={id => void handlePublish(id)} />
+        {loading ? (
+          <CanvasGridSkeleton />
+        ) : loadError ? (
+          <ErrorState title="We couldn't load your canvases" message={loadError} onRetry={() => void load()} />
+        ) : (
+          <CanvasGrid
+            canvases={activeTab === 'owned' ? canvases : shared}
+            owned={activeTab === 'owned'}
+            busyId={busyId}
+            onDelete={setDeleteTarget}
+            onFork={canvas => void handleFork(canvas)}
+            onPublish={canvas => void handlePublish(canvas)}
+          />
         )}
       </div>
+
+      <Modal
+        open={showCreate}
+        title="Create a new canvas"
+        description="Give your workspace a clear name. You can change it later."
+        onClose={() => { if (!creating) { setShowCreate(false); setNewTitle(''); } }}
+        size="sm"
+        closeOnBackdrop={!creating}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => { setShowCreate(false); setNewTitle(''); }} disabled={creating}>Cancel</Button>
+            <Button onClick={() => void handleCreate()} loading={creating} disabled={!newTitle.trim()}>Create canvas</Button>
+          </>
+        }
+      >
+        <Input
+          label="Canvas title"
+          placeholder="e.g. Product planning"
+          value={newTitle}
+          onChange={event => setNewTitle(event.target.value)}
+          onKeyDown={event => event.key === 'Enter' && void handleCreate()}
+          maxLength={120}
+          autoFocus
+        />
+        <p className="mt-2 text-right text-xs text-slate-400">{newTitle.length}/120</p>
+      </Modal>
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Delete this canvas?"
+        description={deleteTarget ? `“${deleteTarget.title}” and its collaborative data will be permanently removed. This action cannot be undone.` : ''}
+        confirmLabel="Delete canvas"
+        danger
+        loading={Boolean(deleteTarget && busyId === deleteTarget.id)}
+        onClose={() => setDeleteTarget(null)}
+        onConfirm={() => void handleDelete()}
+      />
     </Layout>
   );
 }

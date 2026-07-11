@@ -13,6 +13,7 @@ import { OnlineUsers } from '../components/canvas/OnlineUsers';
 import { MemberManager } from '../components/canvas/MemberManager';
 import type { CanvasInfo } from '../types';
 import { ArrowLeft, Globe, EyeOff, UserPlus } from 'lucide-react';
+import { ErrorState, InlineLoader } from '../components/ui';
 
 function RemoteCursors({
   cursors,
@@ -260,7 +261,15 @@ export function Editor() {
   );
 
   if (!canvas) {
-    return <Layout><div className="max-w-5xl mx-auto px-4 py-8 text-center text-gray-400">{loadError || 'Loading canvas...'}</div></Layout>;
+    return (
+      <Layout>
+        <div className="mx-auto max-w-5xl px-4 py-8">
+          {loadError
+            ? <ErrorState title="Canvas unavailable" message={loadError} onRetry={() => window.location.reload()} />
+            : <div className="rounded-2xl border border-slate-200 bg-white"><div className="skeleton h-[55vh] rounded-t-2xl" /><InlineLoader label="Loading collaborative canvas..." /></div>}
+        </div>
+      </Layout>
+    );
   }
 
   return (

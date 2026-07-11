@@ -1,108 +1,119 @@
 import { useEffect, useState } from 'react';
-import { X, UserPlus, Trash2 } from 'lucide-react';
+import { Trash2, UserPlus } from 'lucide-react';
 import { canvasService } from '../../services/canvas';
+import { Avatar, Button, ConfirmDialog, InlineLoader, Modal, useToast } from '../ui';
 import type { CanvasMember } from '../../types';
 
 type AssignableRole = Exclude<CanvasMember['role'], 'owner'>;
 const roles: AssignableRole[] = ['editor', 'viewer', 'commenter'];
 
 export function MemberManager({ canvasId, onClose }: { canvasId: string; onClose: () => void }) {
+  const toast = useToast();
   const [members, setMembers] = useState<CanvasMember[]>([]);
   const [username, setUsername] = useState('');
   const [role, setRole] = useState<AssignableRole>('editor');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
+  const [removeTarget, setRemoveTarget] = useState<CanvasMember | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   useEffect(() => {
     canvasService.listMembers(canvasId)
       .then(setMembers)
-      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load members'))
+      .catch(err => toast.error({ title: 'Could not load members', message: err instanceof Error ? err.message : 'Please try again.' }))
       .finally(() => setLoading(false));
-  }, [canvasId]);
+  }, [canvasId, toast]);
 
   const addMember = async () => {
     if (!username.trim() || saving) return;
     setSaving(true);
-    setError('');
     try {
       const member = await canvasService.addMember(canvasId, username.trim(), role);
       setMembers(prev => [...prev.filter(item => item.user_id !== member.user_id), member]);
       setUsername('');
+      toast.success({ title: 'Member invited', message: `${member.username || username.trim()} can now access this canvas.` });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add member');
-    } finally { setSaving(false); }
+      toast.error({ title: 'Invitation failed', message: err instanceof Error ? err.message : 'Please try again.' });
+    } finally {
+      setSaving(false);
+    }
   };
 
   const updateRole = async (member: CanvasMember, nextRole: AssignableRole) => {
-    setError('');
     try {
       const updated = await canvasService.updateMemberRole(canvasId, member.user_id, nextRole);
       setMembers(prev => prev.map(item => item.user_id === updated.user_id ? updated : item));
-    } catch (err) { setError(err instanceof Error ? err.message : 'Failed to update role'); }
+      toast.success({ title: 'Role updated', message: `${updated.username || `User ${updated.user_id}`} is now ${updated.role}.` });
+    } catch (err) {
+      toast.error({ title: 'Role update failed', message: err instanceof Error ? err.message : 'Please try again.' });
+    }
   };
 
-  const removeMember = async (member: CanvasMember) => {
-    if (!confirm(`Remove ${member.username || member.user_id} from this canvas?`)) return;
-    setError('');
+  const removeMember = async () => {
+    if (!removeTarget) return;
+    setRemoving(true);
     try {
-      await canvasService.removeMember(canvasId, member.user_id);
-      setMembers(prev => prev.filter(item => item.user_id !== member.user_id));
-    } catch (err) { setError(err instanceof Error ? err.message : 'Failed to remove member'); }
+      await canvasService.removeMember(canvasId, removeTarget.user_id);
+      setMembers(prev => prev.filter(item => item.user_id !== removeTarget.user_id));
+      toast.success({ title: 'Member removed', message: `${removeTarget.username || `User ${removeTarget.user_id}`} no longer has access.` });
+      setRemoveTarget(null);
+    } catch (err) {
+      toast.error({ title: 'Could not remove member', message: err instanceof Error ? err.message : 'Please try again.' });
+    } finally {
+      setRemoving(false);
+    }
   };
 
   return (
-    <div className="fixed inset-0 z-[2000] bg-black/30 flex items-center justify-center p-4" onMouseDown={onClose}>
-      <div className="bg-white rounded-xl shadow-xl w-full max-w-lg p-5" onMouseDown={event => event.stopPropagation()}>
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="font-semibold text-gray-900">Canvas members</h3>
-            <p className="text-xs text-gray-500 mt-0.5">Invite registered users and control their access.</p>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-700"><X size={18} /></button>
-        </div>
-
-        <div className="flex gap-2 mb-4">
-          <input className="input-field flex-1" value={username} onChange={event => setUsername(event.target.value)}
-            onKeyDown={event => event.key === 'Enter' && void addMember()} placeholder="Username" />
-          <select className="input-field w-28" value={role} onChange={event => setRole(event.target.value as AssignableRole)}>
+    <>
+      <Modal open title="Canvas members" description="Invite registered users and control their access." onClose={onClose} size="md">
+        <div className="mb-4 flex gap-2">
+          <input className="input-field flex-1" value={username} onChange={event => setUsername(event.target.value)} onKeyDown={event => event.key === 'Enter' && void addMember()} placeholder="Username" autoFocus />
+          <select className="input-field w-28" value={role} onChange={event => setRole(event.target.value as AssignableRole)} aria-label="Member role">
             {roles.map(item => <option key={item} value={item}>{item}</option>)}
           </select>
-          <button className="btn-primary px-3" onClick={() => void addMember()} disabled={!username.trim() || saving} title="Add member">
-            <UserPlus size={17} />
-          </button>
+          <Button onClick={() => void addMember()} loading={saving} disabled={!username.trim()} title="Add member"><UserPlus size={17} /></Button>
         </div>
 
-        {error && <div className="mb-3 text-xs text-red-600 bg-red-50 rounded px-3 py-2">{error}</div>}
-        {loading ? <div className="py-8 text-center text-sm text-gray-400">Loading members...</div> : (
-          <div className="divide-y divide-gray-100 max-h-80 overflow-y-auto">
+        {loading ? (
+          <InlineLoader label="Loading members..." />
+        ) : members.length === 0 ? (
+          <div className="rounded-xl bg-slate-50 py-8 text-center text-sm text-slate-400">No members yet.</div>
+        ) : (
+          <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto">
             {members.map(member => (
               <div key={member.user_id} className="flex items-center gap-3 py-3">
-                <div className="w-8 h-8 rounded-full bg-indigo-100 text-indigo-700 flex items-center justify-center text-xs font-semibold">
-                  {(member.username || member.user_id).slice(0, 2).toUpperCase()}
-                </div>
+                <Avatar name={member.username || `User ${member.user_id}`} />
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-gray-900 truncate">{member.username || `User ${member.user_id}`}</div>
-                  <div className="text-[11px] text-gray-400">ID {member.user_id}</div>
+                  <div className="truncate text-sm font-medium text-slate-900">{member.username || `User ${member.user_id}`}</div>
+                  <div className="text-[11px] text-slate-400">ID {member.user_id}</div>
                 </div>
                 {member.role === 'owner' ? (
-                  <span className="text-xs text-gray-500 px-2">owner</span>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">owner</span>
                 ) : (
                   <>
-                    <select className="text-xs border border-gray-200 rounded-md px-2 py-1.5" value={member.role}
-                      onChange={event => void updateRole(member, event.target.value as AssignableRole)}>
+                    <select className="rounded-md border border-slate-200 px-2 py-1.5 text-xs" value={member.role} onChange={event => void updateRole(member, event.target.value as AssignableRole)} aria-label={`Role for ${member.username || member.user_id}`}>
                       {roles.map(item => <option key={item} value={item}>{item}</option>)}
                     </select>
-                    <button onClick={() => void removeMember(member)} className="text-gray-400 hover:text-red-500" title="Remove member">
-                      <Trash2 size={15} />
-                    </button>
+                    <button onClick={() => setRemoveTarget(member)} className="rounded-md p-1.5 text-slate-400 hover:bg-red-50 hover:text-red-500" title="Remove member"><Trash2 size={15} /></button>
                   </>
                 )}
               </div>
             ))}
           </div>
         )}
-      </div>
-    </div>
+      </Modal>
+
+      <ConfirmDialog
+        open={Boolean(removeTarget)}
+        title="Remove canvas member?"
+        description={removeTarget ? `${removeTarget.username || `User ${removeTarget.user_id}`} will immediately lose access to this canvas.` : ''}
+        confirmLabel="Remove member"
+        danger
+        loading={removing}
+        onClose={() => setRemoveTarget(null)}
+        onConfirm={() => void removeMember()}
+      />
+    </>
   );
 }

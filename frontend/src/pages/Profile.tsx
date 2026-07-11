@@ -3,22 +3,19 @@ import { Link } from 'react-router-dom';
 import { useAuth } from '../store/AuthContext';
 import { Layout } from '../components/layout/Layout';
 import { authService } from '../services/auth';
-import { ArrowLeft, User, Link2, Save, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, User, Link2, Save } from 'lucide-react';
+import { useToast } from '../components/ui';
 
 export function Profile() {
   const { user, setUser } = useAuth();
   const [avatarUrl, setAvatarUrl] = useState(user?.avatar_url || '');
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  const toast = useToast();
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    setError('');
-    setSuccess('');
-
     if (avatarUrl && !avatarUrl.startsWith('http')) {
-      setError('Avatar URL must start with http:// or https://');
+      toast.error({ title: 'Invalid avatar URL', message: 'The address must start with http:// or https://.' });
       return;
     }
 
@@ -26,10 +23,9 @@ export function Profile() {
     try {
       const updated = await authService.updateProfile({ avatar_url: avatarUrl });
       setUser(updated);
-      setSuccess('Profile updated');
-      setTimeout(() => setSuccess(''), 3000);
+      toast.success({ title: 'Profile updated', message: 'Your changes have been saved.' });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Update failed');
+      toast.error({ title: 'Update failed', message: err instanceof Error ? err.message : 'Please try again.' });
     } finally {
       setLoading(false);
     }
@@ -68,20 +64,6 @@ export function Profile() {
           </div>
 
           <form onSubmit={handleSubmit} className="space-y-4">
-            {/* Success/Error messages */}
-            {error && (
-              <div className="flex items-center gap-2 text-red-600 text-sm bg-red-50 px-3 py-2.5 rounded-lg border border-red-100">
-                <AlertCircle size={16} />
-                {error}
-              </div>
-            )}
-            {success && (
-              <div className="flex items-center gap-2 text-green-600 text-sm bg-green-50 px-3 py-2.5 rounded-lg border border-green-100">
-                <CheckCircle2 size={16} />
-                {success}
-              </div>
-            )}
-
             {/* Username (read-only) */}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1.5">Username</label>

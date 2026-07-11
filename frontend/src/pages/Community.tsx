@@ -4,11 +4,13 @@ import { Layout } from '../components/layout/Layout';
 import { communityService } from '../services/community';
 import type { PublishedCanvas } from '../types';
 import { Heart, MessageCircle, GitFork, Search, TrendingUp, Clock } from 'lucide-react';
+import { Button, CanvasGridSkeleton, ErrorState } from '../components/ui';
 
 export function Community() {
   const [items, setItems] = useState<PublishedCanvas[]>([]);
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState('latest');
+  const [loadError, setLoadError] = useState('');
   const [keyword, setKeyword] = useState('');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
@@ -17,13 +19,14 @@ export function Community() {
 
   const load = useCallback(async (p = 1) => {
     setLoading(true);
+    setLoadError('');
     try {
       const res = await communityService.browse({ sort_by: sortBy, q: query || undefined, page: p });
       setItems(res.items);
       setTotal(res.total_count);
       setPage(p);
-    } catch {
-      // ignore
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : 'The community feed is temporarily unavailable.');
     } finally {
       setLoading(false);
     }
@@ -56,7 +59,7 @@ export function Community() {
                 onChange={e => setKeyword(e.target.value)}
               />
             </div>
-            <button type="submit" className="btn-primary text-sm">Search</button>
+            <Button type="submit">Search</Button>
           </form>
 
           <div className="flex gap-1">
@@ -88,7 +91,9 @@ export function Community() {
         </div>
 
         {loading ? (
-          <div className="text-center py-12 text-gray-400">Loading...</div>
+          <CanvasGridSkeleton />
+        ) : loadError ? (
+          <ErrorState title="Could not load the community" message={loadError} onRetry={() => void load(page)} />
         ) : items.length === 0 ? (
           <div className="text-center py-12 card text-gray-400">No published canvases yet</div>
         ) : (
@@ -122,21 +127,21 @@ export function Community() {
             {/* Pagination */}
             {totalPages > 1 && (
               <div className="flex justify-center items-center gap-2 mt-8">
-                <button
-                  onClick={() => load(page - 1)}
+                <Button
+                  variant="secondary"
+                  onClick={() => void load(page - 1)}
                   disabled={page <= 1}
-                  className="btn-secondary text-sm disabled:opacity-30"
                 >
                   Previous
-                </button>
+                </Button>
                 <span className="text-sm text-gray-500">Page {page} of {totalPages}</span>
-                <button
-                  onClick={() => load(page + 1)}
+                <Button
+                  variant="secondary"
+                  onClick={() => void load(page + 1)}
                   disabled={page >= totalPages}
-                  className="btn-secondary text-sm disabled:opacity-30"
                 >
                   Next
-                </button>
+                </Button>
               </div>
             )}
           </>
