@@ -49,6 +49,11 @@ export interface CanvasMember {
 }
 
 // ---- Community ----
+export interface LikeStatus {
+  liked: boolean;
+  like_count: number;
+}
+
 export interface PublishedCanvas {
   canvas_id: string;
   author_id: string;
@@ -57,6 +62,7 @@ export interface PublishedCanvas {
   snapshot_url: string;
   tags: string[];
   like_count: number;
+  is_liked: boolean;
   comment_count: number;
   fork_count: number;
   published_at: number;

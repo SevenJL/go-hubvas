@@ -16,8 +16,8 @@ type CommunityRepository interface {
 	RemovePublished(ctx context.Context, id canvas.CanvasID) error
 
 	// Like operations
-	SaveLike(ctx context.Context, like *Like) error
-	RemoveLike(ctx context.Context, canvasID canvas.CanvasID, userID identity.UserID) error
+	LikeCanvas(ctx context.Context, like *Like) (int64, error)
+	UnlikeCanvas(ctx context.Context, canvasID canvas.CanvasID, userID identity.UserID) (int64, error)
 	HasLiked(ctx context.Context, canvasID canvas.CanvasID, userID identity.UserID) (bool, error)
 	CountLikes(ctx context.Context, canvasID canvas.CanvasID) (int64, error)
 

@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -27,12 +26,22 @@ import (
 	"github.com/hubvas/pkg/idgen"
 )
 
+func configPath() string {
+	if path := os.Getenv("HUBVAS_CONFIG"); path != "" {
+		return path
+	}
+	return "configs/config.yaml"
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Starting Hubvas API Server...")
 
 	// ---- Configuration ----
-	cfg := loadConfig()
+	cfg, err := config.Load(configPath())
+	if err != nil {
+		log.Fatalf("failed to load configuration: %v", err)
+	}
 
 	// ---- Infrastructure: Database ----
 	pool, err := pgxpool.New(context.Background(), cfg.Database.DSN())
@@ -75,6 +84,7 @@ func main() {
 		canvasRepo,
 		snapshotRepo,
 		communityRepo,
+		userRepo,
 		&snowflakeIDAdapter{sf: idGen},
 	)
 
@@ -155,41 +165,6 @@ func main() {
 	_ = canvasAppSvc
 	_ = communityAppSvc
 	_ = eventBus
-}
-
-// loadConfig reads configuration from environment variables with defaults.
-func loadConfig() config.Config {
-	return config.Config{
-		Server: config.ServerConfig{
-			APIHost:      envOrDefault("API_HOST", "0.0.0.0"),
-			APIPort:      8080,
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 30 * time.Second,
-		},
-		Database: config.DatabaseConfig{
-			Host:     envOrDefault("DB_HOST", "localhost"),
-			Port:     5432,
-			User:     envOrDefault("DB_USER", "hubvas"),
-			Password: envOrDefault("DB_PASSWORD", ""),
-			DBName:   envOrDefault("DB_NAME", "hubvas"),
-			SSLMode:  envOrDefault("DB_SSLMODE", "disable"),
-			MaxConns: 20,
-		},
-		Auth: config.AuthConfig{
-			AccessTokenTTL:  15 * time.Minute,
-			RefreshTokenTTL: 30 * 24 * time.Hour,
-			AccessSecret:    envOrDefault("JWT_ACCESS_SECRET", "dev-access-secret"),
-			RefreshSecret:   envOrDefault("JWT_REFRESH_SECRET", "dev-refresh-secret"),
-			BcryptCost:      12,
-		},
-	}
-}
-
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
 
 // snowflakeIDAdapter adapts Snowflake to the application.IDGenerator interface.

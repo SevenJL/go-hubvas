@@ -7,6 +7,8 @@ bin/
 *.out
 
 # VCS & editors
+.DS_Store
+**/.DS_Store
 .git
 .gitignore
 .vscode

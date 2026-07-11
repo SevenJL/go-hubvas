@@ -18,10 +18,10 @@ type Config struct {
 
 // ServerConfig holds HTTP and WS server settings.
 type ServerConfig struct {
-	APIHost    string `yaml:"api_host" env:"API_HOST" default:"0.0.0.0"`
-	APIPort    int    `yaml:"api_port" env:"API_PORT" default:"8080"`
-	WSHost     string `yaml:"ws_host" env:"WS_HOST" default:"0.0.0.0"`
-	WSPort     int    `yaml:"ws_port" env:"WS_PORT" default:"8081"`
+	APIHost      string        `yaml:"api_host" env:"API_HOST" default:"0.0.0.0"`
+	APIPort      int           `yaml:"api_port" env:"API_PORT" default:"8080"`
+	WSHost       string        `yaml:"ws_host" env:"WS_HOST" default:"0.0.0.0"`
+	WSPort       int           `yaml:"ws_port" env:"WS_PORT" default:"8081"`
 	ReadTimeout  time.Duration `yaml:"read_timeout" default:"30s"`
 	WriteTimeout time.Duration `yaml:"write_timeout" default:"30s"`
 }

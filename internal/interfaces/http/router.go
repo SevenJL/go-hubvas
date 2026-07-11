@@ -43,10 +43,12 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 
 	// Community — public read access.
 	r.GET("/api/community", cfg.CommunityHandler.Browse)
+	r.GET("/api/community/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.GetPublished)
 
 	// Canvas detail — public (for published canvases).
 	r.GET("/api/canvases/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CanvasHandler.Get)
 	r.GET("/api/canvases/:id/comments", cfg.CommunityHandler.GetComments)
+	r.GET("/api/canvases/:id/like-status", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.LikeStatus)
 	r.GET("/api/canvases/:id/snapshot", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.SnapshotHandler.Load)
 
 	// ---- Protected routes (JWT required) ----
@@ -61,6 +63,11 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// Canvases (write operations)
 		api.POST("/canvases", cfg.CanvasHandler.Create)
 		api.GET("/canvases", cfg.CanvasHandler.ListMine)
+		api.GET("/canvases/shared", cfg.CanvasHandler.ListShared)
+		api.GET("/canvases/:id/members", cfg.CanvasHandler.ListMembers)
+		api.POST("/canvases/:id/members", cfg.CanvasHandler.AddMember)
+		api.PUT("/canvases/:id/members/:userId", cfg.CanvasHandler.UpdateMemberRole)
+		api.DELETE("/canvases/:id/members/:userId", cfg.CanvasHandler.RemoveMember)
 		api.POST("/canvases/:id/publish", cfg.CanvasHandler.Publish)
 		api.POST("/canvases/:id/fork", cfg.CanvasHandler.Fork)
 		api.DELETE("/canvases/:id", cfg.CanvasHandler.Delete)

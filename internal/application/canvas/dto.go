@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/hubvas/internal/domain/canvas"
+	"github.com/hubvas/internal/domain/shared"
 )
 
 // CreateCanvasRequest is the input DTO for creating a canvas.
@@ -37,7 +38,26 @@ type MemberDTO struct {
 	Role     string `json:"role"`
 }
 
-// InviteRequest is the input DTO for generating an invitation link.
-type InviteRequest struct {
-	Role canvas.Role `json:"role" binding:"required"`
+// AddMemberRequest adds a registered user to a canvas by username.
+type AddMemberRequest struct {
+	Username string `json:"username" binding:"required,min=3,max=50"`
+	Role     string `json:"role" binding:"required,oneof=editor viewer commenter"`
+}
+
+// UpdateMemberRoleRequest changes an existing member's role.
+type UpdateMemberRoleRequest struct {
+	Role string `json:"role" binding:"required,oneof=editor viewer commenter"`
+}
+
+func parseAssignableRole(value string) (canvas.Role, error) {
+	switch value {
+	case "editor":
+		return canvas.RoleEditor, nil
+	case "viewer":
+		return canvas.RoleViewer, nil
+	case "commenter":
+		return canvas.RoleCommenter, nil
+	default:
+		return -1, shared.NewDomainError(shared.ErrInvalidArgument, "role must be editor, viewer, or commenter")
+	}
 }

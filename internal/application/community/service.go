@@ -97,52 +97,70 @@ func (s *CommunityApplicationService) Browse(ctx context.Context, req SearchRequ
 	}, nil
 }
 
-// LikeCanvas adds a like to a published canvas.
-func (s *CommunityApplicationService) LikeCanvas(ctx context.Context, canvasID canvasDomain.CanvasID, userID identity.UserID) error {
-	// Verify the canvas is published.
-	canvas, err := s.canvasRepo.FindByID(ctx, canvasID)
+// GetPublished returns one published canvas with author and requester-specific like state.
+func (s *CommunityApplicationService) GetPublished(ctx context.Context, canvasID canvasDomain.CanvasID, userID identity.UserID) (*PublishedCanvasDTO, error) {
+	p, err := s.communityRepo.FindPublishedByID(ctx, canvasID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if !canvas.Visibility().IsPublished() {
-		return shared.NewDomainError(shared.ErrForbidden, "canvas is not published")
-	}
-
-	// Check for duplicate like.
-	hasLiked, err := s.communityRepo.HasLiked(ctx, canvasID, userID)
+	authorName, err := s.resolveAuthorName(ctx, p.AuthorID(), nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if hasLiked {
-		return shared.NewDomainError(shared.ErrAlreadyExists, "already liked")
+	liked := false
+	if userID != 0 {
+		liked, err = s.communityRepo.HasLiked(ctx, canvasID, userID)
+		if err != nil {
+			return nil, err
+		}
 	}
-
-	like := communityDomain.NewLike(canvasID, userID)
-	if err := s.communityRepo.SaveLike(ctx, like); err != nil {
-		return err
-	}
-
-	// Increment the counter on the published canvas.
-	published, err := s.communityRepo.FindPublishedByID(ctx, canvasID)
-	if err != nil {
-		return err
-	}
-	published.IncrementLike()
-	return s.communityRepo.SavePublished(ctx, published)
+	return &PublishedCanvasDTO{
+		CanvasID: int64(p.CanvasID()), AuthorID: int64(p.AuthorID()), AuthorName: authorName,
+		Title: p.Title(), SnapshotURL: p.SnapshotURL(), Tags: p.Tags(), LikeCount: p.LikeCount(),
+		IsLiked: liked, CommentCount: p.CommentCount(), ForkCount: p.ForkCount(), PublishedAt: p.PublishedAt().Unix(),
+	}, nil
 }
 
-// UnlikeCanvas removes a like from a published canvas.
-func (s *CommunityApplicationService) UnlikeCanvas(ctx context.Context, canvasID canvasDomain.CanvasID, userID identity.UserID) error {
-	if err := s.communityRepo.RemoveLike(ctx, canvasID, userID); err != nil {
-		return err
+// LikeCanvas atomically adds a like and increments the published counter.
+func (s *CommunityApplicationService) LikeCanvas(ctx context.Context, canvasID canvasDomain.CanvasID, userID identity.UserID) (*LikeStatusDTO, error) {
+	canvas, err := s.canvasRepo.FindByID(ctx, canvasID)
+	if err != nil {
+		return nil, err
+	}
+	if !canvas.Visibility().IsPublished() {
+		return nil, shared.NewDomainError(shared.ErrForbidden, "canvas is not published")
 	}
 
-	published, err := s.communityRepo.FindPublishedByID(ctx, canvasID)
+	count, err := s.communityRepo.LikeCanvas(ctx, communityDomain.NewLike(canvasID, userID))
 	if err != nil {
-		return err
+		return nil, err
 	}
-	published.DecrementLike()
-	return s.communityRepo.SavePublished(ctx, published)
+	return &LikeStatusDTO{Liked: true, LikeCount: count}, nil
+}
+
+// UnlikeCanvas atomically removes a like and decrements the published counter.
+func (s *CommunityApplicationService) UnlikeCanvas(ctx context.Context, canvasID canvasDomain.CanvasID, userID identity.UserID) (*LikeStatusDTO, error) {
+	count, err := s.communityRepo.UnlikeCanvas(ctx, canvasID, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &LikeStatusDTO{Liked: false, LikeCount: count}, nil
+}
+
+// GetLikeStatus returns a public count and, when authenticated, the user's state.
+func (s *CommunityApplicationService) GetLikeStatus(ctx context.Context, canvasID canvasDomain.CanvasID, userID identity.UserID) (*LikeStatusDTO, error) {
+	count, err := s.communityRepo.CountLikes(ctx, canvasID)
+	if err != nil {
+		return nil, err
+	}
+	liked := false
+	if userID != 0 {
+		liked, err = s.communityRepo.HasLiked(ctx, canvasID, userID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &LikeStatusDTO{Liked: liked, LikeCount: count}, nil
 }
 
 // PostComment creates a new comment on a published canvas.

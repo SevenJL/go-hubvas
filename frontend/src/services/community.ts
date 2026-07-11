@@ -1,5 +1,5 @@
 import { api } from './api';
-import type { FeedResponse, CommentInfo, CommentListResponse } from '../types';
+import type { FeedResponse, CommentInfo, CommentListResponse, LikeStatus, PublishedCanvas } from '../types';
 
 export const communityService = {
   async browse(params: {
@@ -21,14 +21,28 @@ export const communityService = {
     return res.data;
   },
 
-  async like(canvasId: string): Promise<void> {
-    const res = await api.post<void>(`/canvases/${canvasId}/like`);
-    if (res.code !== 0) throw new Error(res.message || 'Failed to like');
+  async getPublished(canvasId: string): Promise<PublishedCanvas> {
+    const res = await api.get<PublishedCanvas>(`/community/${canvasId}`);
+    if (res.code !== 0 || !res.data) throw new Error(res.message || 'Failed to load published canvas');
+    return res.data;
   },
 
-  async unlike(canvasId: string): Promise<void> {
-    const res = await api.delete<void>(`/canvases/${canvasId}/like`);
-    if (res.code !== 0) throw new Error(res.message || 'Failed to unlike');
+  async getLikeStatus(canvasId: string): Promise<LikeStatus> {
+    const res = await api.get<LikeStatus>(`/canvases/${canvasId}/like-status`);
+    if (res.code !== 0 || !res.data) throw new Error(res.message || 'Failed to load like status');
+    return res.data;
+  },
+
+  async like(canvasId: string): Promise<LikeStatus> {
+    const res = await api.post<LikeStatus>(`/canvases/${canvasId}/like`);
+    if (res.code !== 0 || !res.data) throw new Error(res.message || 'Failed to like');
+    return res.data;
+  },
+
+  async unlike(canvasId: string): Promise<LikeStatus> {
+    const res = await api.delete<LikeStatus>(`/canvases/${canvasId}/like`);
+    if (res.code !== 0 || !res.data) throw new Error(res.message || 'Failed to unlike');
+    return res.data;
   },
 
   async postComment(canvasId: string, content: string): Promise<CommentInfo> {

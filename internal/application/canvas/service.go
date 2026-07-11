@@ -15,11 +15,18 @@ type CanvasCommunityRepository interface {
 	SaveFork(ctx context.Context, fork *communityDomain.Fork) error
 }
 
+// CanvasUserLookup resolves users needed by membership use cases.
+type CanvasUserLookup interface {
+	FindByID(ctx context.Context, id identity.UserID) (*identity.User, error)
+	FindByUsername(ctx context.Context, username string) (*identity.User, error)
+}
+
 // CanvasApplicationService orchestrates canvas-related use cases.
 type CanvasApplicationService struct {
 	canvasRepo    canvasDomain.CanvasRepository
 	snapshotRepo  canvasDomain.SnapshotRepository
 	communityRepo CanvasCommunityRepository
+	userRepo      CanvasUserLookup
 	idGen         shared.IDGenerator
 }
 
@@ -28,12 +35,14 @@ func NewCanvasApplicationService(
 	canvasRepo canvasDomain.CanvasRepository,
 	snapshotRepo canvasDomain.SnapshotRepository,
 	communityRepo CanvasCommunityRepository,
+	userRepo CanvasUserLookup,
 	idGen shared.IDGenerator,
 ) *CanvasApplicationService {
 	return &CanvasApplicationService{
 		canvasRepo:    canvasRepo,
 		snapshotRepo:  snapshotRepo,
 		communityRepo: communityRepo,
+		userRepo:      userRepo,
 		idGen:         idGen,
 	}
 }
@@ -83,6 +92,128 @@ func (s *CanvasApplicationService) ListByOwner(ctx context.Context, ownerID iden
 		dtos[i].CurrentRole = canvasDomain.RoleOwner.String()
 	}
 	return dtos, nil
+}
+
+// ListShared returns canvases shared with a user, excluding canvases they own.
+func (s *CanvasApplicationService) ListShared(ctx context.Context, userID identity.UserID) ([]*CanvasDTO, error) {
+	canvases, err := s.canvasRepo.FindByMember(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	dtos := make([]*CanvasDTO, 0, len(canvases))
+	for _, c := range canvases {
+		if c.OwnerID() == userID {
+			continue
+		}
+		dto := toCanvasDTO(c, 0)
+		if role := c.GetRole(userID); role >= 0 {
+			dto.CurrentRole = role.String()
+		}
+		dtos = append(dtos, dto)
+	}
+	return dtos, nil
+}
+
+// ListMembers returns membership details to users who can access the canvas.
+func (s *CanvasApplicationService) ListMembers(ctx context.Context, canvasID canvasDomain.CanvasID, operatorID identity.UserID) ([]MemberDTO, error) {
+	c, err := s.canvasRepo.FindByID(ctx, canvasID)
+	if err != nil {
+		return nil, err
+	}
+	if !c.IsMember(operatorID) {
+		return nil, shared.NewDomainError(shared.ErrForbidden, "only canvas members can list members")
+	}
+	members := make([]MemberDTO, 0, len(c.Members()))
+	for _, member := range c.Members() {
+		username := ""
+		if s.userRepo != nil {
+			user, lookupErr := s.userRepo.FindByID(ctx, member.ID)
+			if lookupErr != nil {
+				return nil, lookupErr
+			}
+			username = user.Username()
+		}
+		members = append(members, MemberDTO{UserID: int64(member.ID), Username: username, Role: member.Role.String()})
+	}
+	return members, nil
+}
+
+// AddMember grants a registered user access to a canvas. Only the owner may do this.
+func (s *CanvasApplicationService) AddMember(ctx context.Context, canvasID canvasDomain.CanvasID, operatorID identity.UserID, req AddMemberRequest) (*MemberDTO, error) {
+	c, err := s.ownerCanvas(ctx, canvasID, operatorID)
+	if err != nil {
+		return nil, err
+	}
+	role, err := parseAssignableRole(req.Role)
+	if err != nil {
+		return nil, err
+	}
+	user, err := s.userRepo.FindByUsername(ctx, req.Username)
+	if err != nil {
+		return nil, err
+	}
+	if user.ID() == c.OwnerID() {
+		return nil, shared.NewDomainError(shared.ErrInvalidArgument, "owner role cannot be changed")
+	}
+	c.AddMember(user.ID(), role)
+	if err := s.canvasRepo.Save(ctx, c); err != nil {
+		return nil, err
+	}
+	return &MemberDTO{UserID: int64(user.ID()), Username: user.Username(), Role: role.String()}, nil
+}
+
+// UpdateMemberRole changes an existing non-owner member's role.
+func (s *CanvasApplicationService) UpdateMemberRole(ctx context.Context, canvasID canvasDomain.CanvasID, operatorID, memberID identity.UserID, req UpdateMemberRoleRequest) (*MemberDTO, error) {
+	c, err := s.ownerCanvas(ctx, canvasID, operatorID)
+	if err != nil {
+		return nil, err
+	}
+	if memberID == c.OwnerID() {
+		return nil, shared.NewDomainError(shared.ErrInvalidArgument, "owner role cannot be changed")
+	}
+	if !c.IsMember(memberID) {
+		return nil, shared.NewDomainError(shared.ErrNotFound, "member not found")
+	}
+	role, err := parseAssignableRole(req.Role)
+	if err != nil {
+		return nil, err
+	}
+	c.AddMember(memberID, role)
+	if err := s.canvasRepo.Save(ctx, c); err != nil {
+		return nil, err
+	}
+	username := ""
+	if s.userRepo != nil {
+		user, lookupErr := s.userRepo.FindByID(ctx, memberID)
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		username = user.Username()
+	}
+	return &MemberDTO{UserID: int64(memberID), Username: username, Role: role.String()}, nil
+}
+
+// RemoveMember revokes a non-owner member's canvas access.
+func (s *CanvasApplicationService) RemoveMember(ctx context.Context, canvasID canvasDomain.CanvasID, operatorID, memberID identity.UserID) error {
+	c, err := s.ownerCanvas(ctx, canvasID, operatorID)
+	if err != nil {
+		return err
+	}
+	if err := c.RemoveMember(memberID); err != nil {
+		return err
+	}
+	return s.canvasRepo.Save(ctx, c)
+}
+
+func (s *CanvasApplicationService) ownerCanvas(ctx context.Context, canvasID canvasDomain.CanvasID, operatorID identity.UserID) (*canvasDomain.Canvas, error) {
+	c, err := s.canvasRepo.FindByID(ctx, canvasID)
+	if err != nil {
+		return nil, err
+	}
+	if c.OwnerID() != operatorID {
+		return nil, shared.NewDomainError(shared.ErrForbidden, "only the owner can manage members")
+	}
+	return c, nil
 }
 
 // Rename updates the title of a canvas.

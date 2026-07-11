@@ -5,7 +5,7 @@ import { canvasService } from '../services/canvas';
 import { communityService } from '../services/community';
 import { useAuth } from '../store/AuthContext';
 import { CanvasThumbnail } from '../components/canvas/CanvasThumbnail';
-import type { CanvasInfo, CommentInfo } from '../types';
+import type { CanvasInfo, CommentInfo, PublishedCanvas } from '../types';
 import { Heart, MessageCircle, GitFork, Send, ArrowLeft } from 'lucide-react';
 
 export function CanvasDetail() {
@@ -14,27 +14,35 @@ export function CanvasDetail() {
   const navigate = useNavigate();
   const canvasId = id!;
   const [canvas, setCanvas] = useState<CanvasInfo | null>(null);
+  const [published, setPublished] = useState<PublishedCanvas | null>(null);
   const [comments, setComments] = useState<CommentInfo[]>([]);
   const [newComment, setNewComment] = useState('');
   const [liked, setLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
 
   useEffect(() => {
-    canvasService.get(canvasId).then(setCanvas);
-    communityService.getComments(canvasId).then(res => setComments(res.items));
-  }, [canvasId]);
+    void Promise.all([
+      canvasService.get(canvasId).then(setCanvas),
+      communityService.getPublished(canvasId).then(detail => {
+        setPublished(detail);
+        setLiked(detail.is_liked);
+        setLikeCount(detail.like_count);
+      }),
+      communityService.getComments(canvasId).then(res => setComments(res.items)),
+    ]);
+  }, [canvasId, user?.id]);
 
   const handleLike = async () => {
     if (!user) return;
     try {
       if (liked) {
-        await communityService.unlike(canvasId);
-        setLiked(false);
-        setLikeCount(c => c - 1);
+        const status = await communityService.unlike(canvasId);
+        setLiked(status.liked);
+        setLikeCount(status.like_count);
       } else {
-        await communityService.like(canvasId);
-        setLiked(true);
-        setLikeCount(c => c + 1);
+        const status = await communityService.like(canvasId);
+        setLiked(status.liked);
+        setLikeCount(status.like_count);
       }
     } catch { /* ignore */ }
   };
@@ -53,7 +61,7 @@ export function CanvasDetail() {
     if (!user) return navigate('/login');
     try {
       const c = await canvasService.fork(canvasId);
-      navigate(`/canvas/${c.id}`);
+      navigate(`/canvas/${c.id}/edit`);
     } catch { /* ignore */ }
   };
 
@@ -79,7 +87,7 @@ export function CanvasDetail() {
           <div className="p-6">
             <h1 className="text-2xl font-bold text-gray-900">{canvas.title}</h1>
             <p className="text-sm text-gray-500 mt-1">
-              by User #{canvas.owner_id} · {canvas.member_count} members
+              by {published?.author_name || `User #${canvas.owner_id}`} · {canvas.member_count} members
             </p>
 
             {/* Actions */}

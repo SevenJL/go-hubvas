@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -28,12 +27,22 @@ import (
 	"github.com/hubvas/pkg/config"
 )
 
+func configPath() string {
+	if path := os.Getenv("HUBVAS_CONFIG"); path != "" {
+		return path
+	}
+	return "configs/config.yaml"
+}
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Starting Hubvas WebSocket Server...")
 
 	// ---- Configuration ----
-	cfg := loadConfig()
+	cfg, err := config.Load(configPath())
+	if err != nil {
+		log.Fatalf("failed to load configuration: %v", err)
+	}
 
 	// ---- Database (required) ----
 	pool, err := pgxpool.New(context.Background(), cfg.Database.DSN())
@@ -217,63 +226,4 @@ func (m *memorySnapshotRepo) Load(ctx context.Context, canvasID collaboration.Ro
 func (m *memorySnapshotRepo) Delete(ctx context.Context, canvasID collaboration.RoomID) error {
 	delete(m.data, int64(canvasID))
 	return nil
-}
-
-// ---- Config loading ----
-
-func loadConfig() config.Config {
-	return config.Config{
-		Server: config.ServerConfig{
-			WSHost:       envOrDefault("WS_HOST", "0.0.0.0"),
-			WSPort:       envIntOrDefault("WS_PORT", 8081),
-			ReadTimeout:  30 * time.Second,
-			WriteTimeout: 30 * time.Second,
-		},
-		Database: config.DatabaseConfig{
-			Host:     envOrDefault("DB_HOST", "localhost"),
-			Port:     envIntOrDefault("DB_PORT", 5432),
-			User:     envOrDefault("DB_USER", "hubvas"),
-			Password: envOrDefault("DB_PASSWORD", ""),
-			DBName:   envOrDefault("DB_NAME", "hubvas"),
-			SSLMode:  envOrDefault("DB_SSLMODE", "disable"),
-			MaxConns: 20,
-		},
-		Redis: config.RedisConfig{
-			Addr:     envOrDefault("REDIS_ADDR", ""),
-			Password: envOrDefault("REDIS_PASSWORD", ""),
-			DB:       0,
-			PoolSize: 10,
-		},
-		NATS: config.NATSConfig{
-			URL:   envOrDefault("NATS_URL", ""),
-			Token: envOrDefault("NATS_TOKEN", ""),
-		},
-		Storage: config.StorageConfig{
-			Endpoint:  envOrDefault("STORAGE_ENDPOINT", ""),
-			AccessKey: envOrDefault("STORAGE_ACCESS_KEY", ""),
-			SecretKey: envOrDefault("STORAGE_SECRET_KEY", ""),
-			Bucket:    envOrDefault("STORAGE_BUCKET", "hubvas-snapshots"),
-			UseSSL:    false,
-		},
-		Auth: config.AuthConfig{
-			AccessSecret:  envOrDefault("JWT_ACCESS_SECRET", "dev-access-secret"),
-			RefreshSecret: envOrDefault("JWT_REFRESH_SECRET", "dev-refresh-secret"),
-		},
-	}
-}
-
-func envOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
-}
-
-func envIntOrDefault(key string, def int) int {
-	if v := os.Getenv(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
-	}
-	return def
 }

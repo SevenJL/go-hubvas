@@ -250,28 +250,65 @@ const (
 	communityInsertLikeSQL = `
 		INSERT INTO likes (canvas_id, user_id, created_at)
 		VALUES ($1, $2, $3)`
-
-	communityDeleteLikeSQL = `DELETE FROM likes WHERE canvas_id = $1 AND user_id = $2`
+	communityDeleteLikeSQL    = `DELETE FROM likes WHERE canvas_id = $1 AND user_id = $2`
+	communityIncrementLikeSQL = `
+		UPDATE published_canvases
+		SET like_count = like_count + 1
+		WHERE canvas_id = $1
+		RETURNING like_count`
+	communityDecrementLikeSQL = `
+		UPDATE published_canvases
+		SET like_count = GREATEST(like_count - 1, 0)
+		WHERE canvas_id = $1
+		RETURNING like_count`
 	communityHasLikedSQL   = `SELECT EXISTS(SELECT 1 FROM likes WHERE canvas_id = $1 AND user_id = $2)`
 	communityCountLikesSQL = `SELECT COUNT(*) FROM likes WHERE canvas_id = $1`
 )
 
-// SaveLike creates a new like.
-func (r *CommunityRepo) SaveLike(ctx context.Context, like *communityDomain.Like) error {
-	_, err := r.pool.Exec(ctx, communityInsertLikeSQL, like.CanvasID, like.UserID, like.CreatedAt)
-	return mapPgError(err)
+// LikeCanvas inserts a like and updates the projection counter in one transaction.
+func (r *CommunityRepo) LikeCanvas(ctx context.Context, like *communityDomain.Like) (int64, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, communityInsertLikeSQL, like.CanvasID, like.UserID, like.CreatedAt); err != nil {
+		return 0, mapPgError(err)
+	}
+	var count int64
+	if err := tx.QueryRow(ctx, communityIncrementLikeSQL, like.CanvasID).Scan(&count); err != nil {
+		return 0, mapPgError(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
-// RemoveLike deletes a like.
-func (r *CommunityRepo) RemoveLike(ctx context.Context, canvasID canvasDomain.CanvasID, userID identity.UserID) error {
-	tag, err := r.pool.Exec(ctx, communityDeleteLikeSQL, canvasID, userID)
+// UnlikeCanvas removes a like and updates the projection counter in one transaction.
+func (r *CommunityRepo) UnlikeCanvas(ctx context.Context, canvasID canvasDomain.CanvasID, userID identity.UserID) (int64, error) {
+	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return mapPgError(err)
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, communityDeleteLikeSQL, canvasID, userID)
+	if err != nil {
+		return 0, mapPgError(err)
 	}
 	if tag.RowsAffected() == 0 {
-		return shared.NewDomainError(shared.ErrNotFound, "like not found")
+		return 0, shared.NewDomainError(shared.ErrNotFound, "like not found")
 	}
-	return nil
+	var count int64
+	if err := tx.QueryRow(ctx, communityDecrementLikeSQL, canvasID).Scan(&count); err != nil {
+		return 0, mapPgError(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // HasLiked checks whether a user has already liked a canvas.
@@ -281,7 +318,7 @@ func (r *CommunityRepo) HasLiked(ctx context.Context, canvasID canvasDomain.Canv
 	return exists, mapPgError(err)
 }
 
-// CountLikes returns the total likes for a canvas.
+// CountLikes returns the source-of-truth count from the likes table.
 func (r *CommunityRepo) CountLikes(ctx context.Context, canvasID canvasDomain.CanvasID) (int64, error) {
 	var count int64
 	err := r.pool.QueryRow(ctx, communityCountLikesSQL, canvasID).Scan(&count)

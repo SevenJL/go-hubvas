@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 
@@ -69,15 +70,14 @@ func (r *SnapshotRepo) Save(ctx context.Context, canvasID collaboration.RoomID, 
 
 // archiveLatest copies the current latest.bin to a versioned key.
 func (r *SnapshotRepo) archiveLatest(ctx context.Context, canvasID collaboration.RoomID) {
-	// Stat the current latest to check if it exists.
-	_, err := r.client.StatObject(ctx, r.bucketName, latestKey(canvasID), minio.StatObjectOptions{})
+	// Stat the current latest to check if it exists and derive a stable,
+	// monotonic-enough archive id from the version being archived.
+	info, err := r.client.StatObject(ctx, r.bucketName, latestKey(canvasID), minio.StatObjectOptions{})
 	if err != nil {
 		return // Nothing to archive.
 	}
 
-	// Use the object's last-modified timestamp as a crude version number.
-	// A proper implementation would use an atomic counter from the Room.
-	version := collaboration.RoomID(0) // placeholder
+	version := snapshotVersion(info.LastModified)
 
 	// Copy the object to a versioned key.
 	src := minio.CopySrcOptions{
@@ -86,13 +86,20 @@ func (r *SnapshotRepo) archiveLatest(ctx context.Context, canvasID collaboration
 	}
 	dst := minio.CopyDestOptions{
 		Bucket: r.bucketName,
-		Object: versionKey(canvasID, int64(version)),
+		Object: versionKey(canvasID, version),
 	}
 	_, err = r.client.CopyObject(ctx, dst, src)
 	if err != nil {
 		// Best-effort; log and continue.
 		_ = err
 	}
+}
+
+func snapshotVersion(lastModified time.Time) int64 {
+	if lastModified.IsZero() {
+		return time.Now().UTC().UnixNano()
+	}
+	return lastModified.UTC().UnixNano()
 }
 
 // ---- Load ----
@@ -168,4 +175,3 @@ func (r *SnapshotRepo) Delete(ctx context.Context, canvasID collaboration.RoomID
 	}
 	return nil
 }
-

@@ -74,6 +74,92 @@ func (h *CanvasHandler) ListMine(c *gin.Context) {
 	response.OK(c, dtos)
 }
 
+// ListShared handles GET /api/canvases/shared.
+func (h *CanvasHandler) ListShared(c *gin.Context) {
+	userID := identity.UserID(getUserID(c))
+	dtos, err := h.appSvc.ListShared(c.Request.Context(), userID)
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.OK(c, dtos)
+}
+
+// ListMembers handles GET /api/canvases/:id/members.
+func (h *CanvasHandler) ListMembers(c *gin.Context) {
+	canvasID, ok := parseCanvasID(c)
+	if !ok {
+		return
+	}
+	members, err := h.appSvc.ListMembers(c.Request.Context(), canvasID, identity.UserID(getUserID(c)))
+	if err != nil {
+		respondCanvasError(c, err, "list_members_failed")
+		return
+	}
+	response.OK(c, members)
+}
+
+// AddMember handles POST /api/canvases/:id/members.
+func (h *CanvasHandler) AddMember(c *gin.Context) {
+	canvasID, ok := parseCanvasID(c)
+	if !ok {
+		return
+	}
+	var req appCanvas.AddMemberRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	member, err := h.appSvc.AddMember(c.Request.Context(), canvasID, identity.UserID(getUserID(c)), req)
+	if err != nil {
+		respondCanvasError(c, err, "add_member_failed")
+		return
+	}
+	response.Created(c, member)
+}
+
+// UpdateMemberRole handles PUT /api/canvases/:id/members/:userId.
+func (h *CanvasHandler) UpdateMemberRole(c *gin.Context) {
+	canvasID, ok := parseCanvasID(c)
+	if !ok {
+		return
+	}
+	memberID, err := strconv.ParseInt(c.Param("userId"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "invalid member user ID")
+		return
+	}
+	var req appCanvas.UpdateMemberRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	member, err := h.appSvc.UpdateMemberRole(c.Request.Context(), canvasID, identity.UserID(getUserID(c)), identity.UserID(memberID), req)
+	if err != nil {
+		respondCanvasError(c, err, "update_member_failed")
+		return
+	}
+	response.OK(c, member)
+}
+
+// RemoveMember handles DELETE /api/canvases/:id/members/:userId.
+func (h *CanvasHandler) RemoveMember(c *gin.Context) {
+	canvasID, ok := parseCanvasID(c)
+	if !ok {
+		return
+	}
+	memberID, err := strconv.ParseInt(c.Param("userId"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "invalid member user ID")
+		return
+	}
+	if err := h.appSvc.RemoveMember(c.Request.Context(), canvasID, identity.UserID(getUserID(c)), identity.UserID(memberID)); err != nil {
+		respondCanvasError(c, err, "remove_member_failed")
+		return
+	}
+	response.OK(c, gin.H{"status": "removed"})
+}
+
 // Publish handles POST /api/canvases/:id/publish.
 func (h *CanvasHandler) Publish(c *gin.Context) {
 	userID := getUserID(c)
@@ -131,4 +217,28 @@ func (h *CanvasHandler) Delete(c *gin.Context) {
 func getUserID(c *gin.Context) int64 {
 	val, _ := c.Get("userID")
 	return int64(val.(identity.UserID))
+}
+
+func parseCanvasID(c *gin.Context) (canvas.CanvasID, bool) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "invalid canvas ID")
+		return 0, false
+	}
+	return canvas.CanvasID(id), true
+}
+
+func respondCanvasError(c *gin.Context, err error, fallbackCode string) {
+	switch {
+	case errors.Is(err, shared.ErrForbidden):
+		response.Forbidden(c, err.Error())
+	case errors.Is(err, shared.ErrNotFound):
+		response.NotFound(c, err.Error())
+	case errors.Is(err, shared.ErrConflict):
+		response.Conflict(c, err.Error())
+	case errors.Is(err, shared.ErrInvalidArgument):
+		response.BadRequest(c, err.Error())
+	default:
+		response.Error(c, 500, fallbackCode, err.Error())
+	}
 }

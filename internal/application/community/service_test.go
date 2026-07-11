@@ -31,9 +31,11 @@ func (r *communityRepositoryStub) FindPublished(context.Context, communityDomain
 func (r *communityRepositoryStub) RemovePublished(context.Context, canvasDomain.CanvasID) error {
 	return nil
 }
-func (r *communityRepositoryStub) SaveLike(context.Context, *communityDomain.Like) error { return nil }
-func (r *communityRepositoryStub) RemoveLike(context.Context, canvasDomain.CanvasID, identity.UserID) error {
-	return nil
+func (r *communityRepositoryStub) LikeCanvas(context.Context, *communityDomain.Like) (int64, error) {
+	return 1, nil
+}
+func (r *communityRepositoryStub) UnlikeCanvas(context.Context, canvasDomain.CanvasID, identity.UserID) (int64, error) {
+	return 0, nil
 }
 func (r *communityRepositoryStub) HasLiked(context.Context, canvasDomain.CanvasID, identity.UserID) (bool, error) {
 	return false, nil

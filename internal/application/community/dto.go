@@ -11,6 +11,7 @@ type PublishedCanvasDTO struct {
 	SnapshotURL  string   `json:"snapshot_url"`
 	Tags         []string `json:"tags"`
 	LikeCount    int64    `json:"like_count"`
+	IsLiked      bool     `json:"is_liked"`
 	CommentCount int64    `json:"comment_count"`
 	ForkCount    int64    `json:"fork_count"`
 	PublishedAt  int64    `json:"published_at"`
@@ -54,4 +55,10 @@ type ForkDTO struct {
 	NewID      int64     `json:"new_id"`
 	UserID     int64     `json:"user_id"`
 	CreatedAt  time.Time `json:"created_at"`
+}
+
+// LikeStatusDTO reports the requesting user's like state and the current total.
+type LikeStatusDTO struct {
+	Liked     bool  `json:"liked"`
+	LikeCount int64 `json:"like_count"`
 }

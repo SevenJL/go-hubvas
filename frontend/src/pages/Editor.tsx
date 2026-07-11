@@ -10,8 +10,9 @@ import { useTldrawSync } from '../hooks/useTldrawSync';
 import { useAuth } from '../store/AuthContext';
 import { Layout } from '../components/layout/Layout';
 import { OnlineUsers } from '../components/canvas/OnlineUsers';
+import { MemberManager } from '../components/canvas/MemberManager';
 import type { CanvasInfo } from '../types';
-import { ArrowLeft, Globe, EyeOff } from 'lucide-react';
+import { ArrowLeft, Globe, EyeOff, UserPlus } from 'lucide-react';
 
 function RemoteCursors({
   cursors,
@@ -60,6 +61,7 @@ export function Editor() {
   const [canvas, setCanvas] = useState<CanvasInfo | null>(null);
   const [loadError, setLoadError] = useState('');
   const [publishing, setPublishing] = useState(false);
+  const [showMembers, setShowMembers] = useState(false);
   const [editorInstance, setEditorInstance] = useState<TldrawEditor | null>(null);
   const [viewportRevision, setViewportRevision] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -67,6 +69,8 @@ export function Editor() {
   useEffect(() => {
     canvasService.get(canvasId).then(setCanvas).catch(err => setLoadError(err.message));
   }, [canvasId]);
+
+  const isOwner = user && canvas ? Number(canvas.owner_id) === Number(user.id) : false;
 
   // Determine if current user can edit this canvas.
   const canEdit = user && canvas
@@ -76,31 +80,15 @@ export function Editor() {
 
   // ---- WebSocket (awareness + real-time sync for editors) ----
   const token = getAccessToken() || '';
-  const applyRemoteRef = useRef<(snapshot: unknown) => void>(() => {});
-  const handleSyncMessage = useCallback((payload: unknown) => { applyRemoteRef.current(payload); }, []);
-
-  const { connected, awareness, onlineUsers, sendAwareness, sendTextMessage } = useYjsProvider({
+  const { doc, connected, awareness, onlineUsers, sendAwareness } = useYjsProvider({
     canvasId, token,
     username: user?.username || 'Anonymous',
     userId: user?.id || '0',
-    onSyncMessage: handleSyncMessage,
+    canEdit,
   });
 
-  // ---- tldraw persistence (only for editors) ----
-  const handleSnapshotSaved = useCallback((snapshot: unknown) => {
-    sendTextMessage('sync', snapshot);
-  }, [sendTextMessage]);
-  const handleRealtimeChange = useCallback((batch: unknown) => {
-    sendTextMessage('sync', batch);
-  }, [sendTextMessage]);
-
-  const { onMount: onTldrawMount, applyRemoteSnapshot } = useTldrawSync(
-    canEdit
-      ? { canvasId, onSnapshotSaved: handleSnapshotSaved, onRealtimeChange: handleRealtimeChange }
-      : { canvasId },
-  );
-
-  useEffect(() => { applyRemoteRef.current = applyRemoteSnapshot; }, [applyRemoteSnapshot]);
+  // ---- tldraw/Yjs collaboration + durable HTTP snapshots ----
+  const { onMount: onTldrawMount } = useTldrawSync({ canvasId, doc, canEdit });
 
   // ---- Awareness (cursor tracking — only for editors) ----
   const awarenessThrottle = useRef<number>(0);
@@ -221,8 +209,15 @@ export function Editor() {
               </span>
             )}
 
+            {isOwner && (
+              <button onClick={() => setShowMembers(true)}
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors">
+                <UserPlus size={13} /> Members
+              </button>
+            )}
+
             {/* Publish button (owner only) */}
-            {canEdit && canvas.visibility !== 'published' && (
+            {isOwner && canvas.visibility !== 'published' && (
               <button onClick={handlePublish} disabled={publishing}
                       className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors disabled:opacity-50">
                 <Globe size={13} /> {publishing ? 'Publishing...' : 'Publish'}
@@ -238,9 +233,11 @@ export function Editor() {
           <OnlineUsers users={onlineUsers} connected={connected} currentUsername={user?.username || 'You'} />
         </div>
 
+        {showMembers && <MemberManager canvasId={canvasId} onClose={() => setShowMembers(false)} />}
+
         {/* tldraw canvas */}
         <div className="flex-1 relative" ref={containerRef}>
-          <Tldraw onMount={handleMount} components={tldrawComponents} />
+          <Tldraw key={canvasId} onMount={handleMount} components={tldrawComponents} />
           <RemoteCursors cursors={awareness} editor={editorInstance} viewportRevision={viewportRevision} />
         </div>
       </div>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import * as Y from 'yjs';
 import type { WSMessage, PresenceMember } from '../types';
 
@@ -7,6 +7,7 @@ interface UseYjsProviderOptions {
   token: string;
   username: string;
   userId: string;
+  canEdit: boolean;
   /** Called when a remote sync message is received (JSON text frame with type="sync"). */
   onSyncMessage?: (payload: unknown) => void;
 }
@@ -34,9 +35,14 @@ export function useYjsProvider({
   token,
   username,
   userId,
+  canEdit,
   onSyncMessage,
 }: UseYjsProviderOptions): UseYjsProviderResult {
-  const [doc] = useState(() => new Y.Doc());
+  const doc = useMemo(() => {
+    // A canvas change must get an isolated CRDT document.
+    void canvasId;
+    return new Y.Doc();
+  }, [canvasId]);
   const wsRef = useRef<WebSocket | null>(null);
   const seqRef = useRef(0);
   const reconnectAttempt = useRef(0);
@@ -73,6 +79,12 @@ export function useYjsProvider({
     ws.onopen = () => {
       setConnected(true);
       reconnectAttempt.current = 0;
+      // Re-send the complete local Yjs state after every connection. This is
+      // idempotent and ensures edits made while disconnected are merged back
+      // into the room as soon as an editor reconnects.
+      if (canEdit) {
+        ws.send(toArrayBuffer(Y.encodeStateAsUpdate(doc)));
+      }
       sendTextMessage('presence', { user_id: userId, username });
     };
 
@@ -144,7 +156,7 @@ export function useYjsProvider({
       reconnectAttempt.current++;
       reconnectTimer.current = setTimeout(() => connectRef.current(), delay);
     };
-  }, [canvasId, token, userId, username, sendTextMessage, doc]);
+  }, [canvasId, token, userId, username, sendTextMessage, doc, canEdit]);
 
   useEffect(() => {
     connectRef.current = connect;

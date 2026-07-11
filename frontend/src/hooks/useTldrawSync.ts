@@ -1,65 +1,42 @@
 import { useRef, useCallback, useEffect } from 'react';
-import type { Editor } from '@tldraw/tldraw';
+import type { Editor, TLRecord } from '@tldraw/tldraw';
+import * as Y from 'yjs';
 import { getAccessToken } from '../services/api';
 
 const BASE_URL = '/api';
 const SAVE_DEBOUNCE_MS = 1000;
-const MAX_QUEUED_REMOTE_MESSAGES = 500;
+const LOCAL_TLDRAW_ORIGIN = 'tldraw-local';
+const RECORDS_MAP = 'tldraw-records';
+const META_MAP = 'tldraw-meta';
+const SCHEMA_KEY = 'schema';
 
-type StoreDiff = Parameters<Editor['store']['applyDiff']>[0];
-
-export interface TldrawDiffBatch {
-  kind: 'tldraw-diff-v1';
-  diffs: StoreDiff[];
-}
+type StoreSnapshot = ReturnType<Editor['store']['getStoreSnapshot']>;
 
 interface UseTldrawSyncOptions {
   canvasId: string;
-  /** Broadcast a full snapshot after durable persistence for reconnect/catch-up compatibility. */
-  onSnapshotSaved?: (snapshot: unknown) => void;
-  /** Broadcast local document changes immediately; batches are flushed once per animation frame. */
-  onRealtimeChange?: (batch: TldrawDiffBatch) => void;
+  doc: Y.Doc;
+  canEdit: boolean;
 }
 
-function isDiffBatch(value: unknown): value is TldrawDiffBatch {
-  if (!value || typeof value !== 'object') return false;
-  const candidate = value as Partial<TldrawDiffBatch>;
-  return candidate.kind === 'tldraw-diff-v1' && Array.isArray(candidate.diffs);
-}
-
-export function useTldrawSync({ canvasId, onSnapshotSaved, onRealtimeChange }: UseTldrawSyncOptions) {
+/**
+ * Synchronizes tldraw's document records through Yjs.
+ *
+ * Each tldraw record is stored under its stable record id in a Y.Map. Local
+ * tldraw diffs become Yjs transactions, while remote Yjs transactions are
+ * applied through tldraw's remote-change path so they do not loop back.
+ * PostgreSQL snapshots remain as a durable/read-model fallback and thumbnail
+ * source, but Yjs is the authoritative real-time collaboration state.
+ */
+export function useTldrawSync({ canvasId, doc, canEdit }: UseTldrawSyncOptions) {
   const editorRef = useRef<Editor | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  const realtimeFrame = useRef<number | undefined>(undefined);
-  const pendingDiffs = useRef<StoreDiff[]>([]);
-  const pendingRemote = useRef<unknown[]>([]);
   const lastSaved = useRef<string>('');
   const loaded = useRef(false);
   const cleanupRef = useRef<(() => void) | null>(null);
-  const onRealtimeChangeRef = useRef(onRealtimeChange);
-
-  useEffect(() => {
-    onRealtimeChangeRef.current = onRealtimeChange;
-  }, [onRealtimeChange]);
-
-  const flushRealtimeChanges = useCallback(() => {
-    realtimeFrame.current = undefined;
-    if (pendingDiffs.current.length === 0) return;
-    const diffs = pendingDiffs.current;
-    pendingDiffs.current = [];
-    onRealtimeChangeRef.current?.({ kind: 'tldraw-diff-v1', diffs });
-  }, []);
-
-  const queueRealtimeChange = useCallback((diff: StoreDiff) => {
-    pendingDiffs.current.push(diff);
-    if (realtimeFrame.current === undefined) {
-      realtimeFrame.current = window.requestAnimationFrame(flushRealtimeChanges);
-    }
-  }, [flushRealtimeChanges]);
 
   const save = useCallback(async () => {
     const editor = editorRef.current;
-    if (!editor || !loaded.current) return;
+    if (!editor || !loaded.current || !canEdit) return;
 
     const token = getAccessToken();
     if (!token) return;
@@ -84,7 +61,7 @@ export function useTldrawSync({ canvasId, onSnapshotSaved, onRealtimeChange }: U
           if (result) thumbnail = result.url;
         }
       } catch {
-        // Thumbnail generation is best-effort. Don't block save.
+        // Thumbnail generation is best-effort. Don't block snapshot persistence.
       }
 
       const res = await fetch(`${BASE_URL}/canvases/${canvasId}/snapshot`, {
@@ -100,108 +77,121 @@ export function useTldrawSync({ canvasId, onSnapshotSaved, onRealtimeChange }: U
         if (res.status === 403) return;
         throw new Error(`Save failed: ${res.status}`);
       }
-
       lastSaved.current = json;
-      onSnapshotSaved?.(snapshot);
-    } catch (e) {
-      console.error('[tldraw] save failed:', e);
-    }
-  }, [canvasId, onSnapshotSaved]);
-
-  const applyRemoteMessageNow = useCallback((message: unknown) => {
-    const editor = editorRef.current;
-    if (!editor) return;
-
-    try {
-      editor.store.mergeRemoteChanges(() => {
-        if (isDiffBatch(message)) {
-          for (const diff of message.diffs) editor.store.applyDiff(diff);
-        } else {
-          editor.store.loadStoreSnapshot(
-            message as Parameters<typeof editor.store.loadStoreSnapshot>[0],
-          );
-          lastSaved.current = JSON.stringify(message);
-        }
-      });
     } catch (error) {
-      console.warn('[tldraw] ignored malformed remote change:', error);
+      console.error('[tldraw] save failed:', error);
     }
-  }, []);
+  }, [canvasId, canEdit]);
 
-  /** Apply an immediate diff batch or a backward-compatible full snapshot. */
-  const applyRemoteSnapshot = useCallback((message: unknown) => {
-    if (!editorRef.current || !loaded.current) {
-      pendingRemote.current.push(message);
-      if (pendingRemote.current.length > MAX_QUEUED_REMOTE_MESSAGES) pendingRemote.current.shift();
-      return;
-    }
-    applyRemoteMessageNow(message);
-  }, [applyRemoteMessageNow]);
-
-  const load = useCallback(async () => {
-    const editor = editorRef.current;
-    if (!editor) return;
-
+  const loadHTTPFallback = useCallback(async (editor: Editor) => {
     const token = getAccessToken();
-    if (token) {
-      try {
-        const res = await fetch(`${BASE_URL}/canvases/${canvasId}/snapshot`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        const body = await res.json();
-        const snapshot = body.data?.data || body.data;
-        if (body.code === 0 && snapshot) {
-          editor.store.mergeRemoteChanges(() => editor.store.loadStoreSnapshot(snapshot));
-          lastSaved.current = JSON.stringify(snapshot);
-        }
-      } catch {
-        // Start with an empty canvas if load fails.
+    if (!token) return;
+    try {
+      const res = await fetch(`${BASE_URL}/canvases/${canvasId}/snapshot`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const body = await res.json();
+      const snapshot = body.data?.data || body.data;
+      if (body.code === 0 && snapshot) {
+        editor.store.mergeRemoteChanges(() => editor.store.loadStoreSnapshot(snapshot));
+        lastSaved.current = JSON.stringify(snapshot);
       }
+    } catch {
+      // New canvases and temporarily unavailable snapshot storage start empty.
     }
+  }, [canvasId]);
 
-    loaded.current = true;
-    const queued = pendingRemote.current;
-    pendingRemote.current = [];
-    for (const message of queued) applyRemoteMessageNow(message);
-  }, [canvasId, applyRemoteMessageNow]);
+  const bindYjs = useCallback((editor: Editor) => {
+    const records = doc.getMap<TLRecord>(RECORDS_MAP);
+    const metadata = doc.getMap<StoreSnapshot['schema']>(META_MAP);
+
+    const applyCompleteYjsState = () => {
+      if (records.size === 0) return;
+      const current = editor.store.getStoreSnapshot();
+      const schema = metadata.get(SCHEMA_KEY) ?? current.schema;
+      const store = Object.fromEntries(records.entries()) as StoreSnapshot['store'];
+      editor.store.mergeRemoteChanges(() => {
+        editor.store.loadStoreSnapshot({ store, schema });
+      });
+      lastSaved.current = JSON.stringify(editor.store.getStoreSnapshot());
+    };
+
+    const seedYjsFromEditor = () => {
+      if (records.size > 0 || !canEdit) return;
+      const snapshot = editor.store.getStoreSnapshot();
+      doc.transact(() => {
+        metadata.set(SCHEMA_KEY, snapshot.schema);
+        for (const [id, record] of Object.entries(snapshot.store)) {
+          records.set(id, record as TLRecord);
+        }
+      }, LOCAL_TLDRAW_ORIGIN);
+    };
+
+    if (records.size > 0) applyCompleteYjsState();
+    else seedYjsFromEditor();
+
+    const onYjsRecords = (event: Y.YMapEvent<TLRecord>, transaction: Y.Transaction) => {
+      if (transaction.origin === LOCAL_TLDRAW_ORIGIN) return;
+      const put: TLRecord[] = [];
+      const remove: TLRecord['id'][] = [];
+      for (const key of event.keysChanged) {
+        const record = records.get(key);
+        if (record) put.push(record);
+        else remove.push(key as TLRecord['id']);
+      }
+      editor.store.mergeRemoteChanges(() => {
+        if (remove.length > 0) editor.store.remove(remove);
+        if (put.length > 0) editor.store.put(put);
+      });
+    };
+    records.observe(onYjsRecords);
+
+    const unlisten = canEdit
+      ? editor.store.listen(({ changes }) => {
+          doc.transact(() => {
+            for (const [id, record] of Object.entries(changes.added)) records.set(id, record);
+            for (const [id, pair] of Object.entries(changes.updated)) records.set(id, pair[1]);
+            for (const id of Object.keys(changes.removed)) records.delete(id);
+          }, LOCAL_TLDRAW_ORIGIN);
+
+          if (saveTimer.current) clearTimeout(saveTimer.current);
+          saveTimer.current = setTimeout(save, SAVE_DEBOUNCE_MS);
+        }, { source: 'user', scope: 'document' })
+      : () => undefined;
+
+    return () => {
+      records.unobserve(onYjsRecords);
+      unlisten();
+    };
+  }, [canEdit, doc, save]);
 
   const onMount = useCallback((editor: Editor) => {
     cleanupRef.current?.();
     editorRef.current = editor;
     loaded.current = false;
 
-    void load().then(() => {
+    void loadHTTPFallback(editor).then(() => {
       if (editorRef.current !== editor) return;
-      const unlisten = editor.store.listen(
-        ({ changes }) => {
-          queueRealtimeChange(changes);
-          if (saveTimer.current) clearTimeout(saveTimer.current);
-          saveTimer.current = setTimeout(save, SAVE_DEBOUNCE_MS);
-        },
-        { source: 'user', scope: 'document' },
-      );
+      const unbindYjs = bindYjs(editor);
+      loaded.current = true;
 
       const handleUnload = () => { void save(); };
       window.addEventListener('beforeunload', handleUnload);
-
       cleanupRef.current = () => {
-        unlisten();
+        unbindYjs();
         window.removeEventListener('beforeunload', handleUnload);
         if (saveTimer.current) clearTimeout(saveTimer.current);
         saveTimer.current = undefined;
-        if (realtimeFrame.current !== undefined) cancelAnimationFrame(realtimeFrame.current);
-        realtimeFrame.current = undefined;
-        flushRealtimeChanges();
         void save();
         if (editorRef.current === editor) editorRef.current = null;
       };
     });
-  }, [load, queueRealtimeChange, save, flushRealtimeChanges]);
+  }, [bindYjs, loadHTTPFallback, save]);
 
   useEffect(() => () => {
     cleanupRef.current?.();
     cleanupRef.current = null;
   }, []);
 
-  return { onMount, save, load, applyRemoteSnapshot };
+  return { onMount, save };
 }
