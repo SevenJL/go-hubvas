@@ -59,11 +59,8 @@ func main() {
 	)
 	permSvc := infAuth.NewCanvasPermissionService(canvasRepo)
 
-	// ---- Redis (optional — presence + locking) ----
-	var (
-		presenceRepo collaboration.PresenceRepository
-		lockRepo     collaboration.LockRepository
-	)
+	// ---- Redis (optional — distributed presence) ----
+	var presenceRepo collaboration.PresenceRepository
 	if cfg.Redis.Addr != "" {
 		redisClient := goredis.NewClient(&goredis.Options{
 			Addr:     cfg.Redis.Addr,
@@ -72,15 +69,14 @@ func main() {
 			PoolSize: cfg.Redis.PoolSize,
 		})
 		if err := redisClient.Ping(context.Background()).Err(); err != nil {
-			log.Printf("WARNING: Redis unavailable — presence/locking disabled: %v", err)
+			log.Printf("WARNING: Redis unavailable — presence disabled: %v", err)
 		} else {
 			rp := infredis.NewPresenceRepo(redisClient)
 			presenceRepo = rp
-			lockRepo = rp // PresenceRepo also implements LockRepository
-			log.Println("Connected to Redis (presence + locking enabled)")
+			log.Println("Connected to Redis (distributed presence enabled)")
 		}
 	} else {
-		log.Println("INFO: Redis not configured — running without presence/locking")
+		log.Println("INFO: Redis not configured — running without distributed presence")
 	}
 
 	// ---- MinIO (optional — snapshot persistence) ----
@@ -116,12 +112,33 @@ func main() {
 
 	// ---- Throttle ----
 	throttleSvc := throttle.NewThrottleService()
+	throttleCtx, cancelThrottle := context.WithCancel(context.Background())
+	defer cancelThrottle()
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-throttleCtx.Done():
+				return
+			case <-ticker.C:
+				throttleSvc.CleanupExpired()
+			}
+		}
+	}()
 
 	// ---- Hub (in-memory room manager) ----
-	hub := ws.NewHub(snapshotRepo)
+	hubOptions := make([]ws.HubOption, 0, 2)
+	if pubsub != nil {
+		hubOptions = append(hubOptions, ws.WithPubSub(pubsub))
+	}
+	if presenceRepo != nil {
+		hubOptions = append(hubOptions, ws.WithPresenceRepository(presenceRepo))
+	}
+	hub := ws.NewHub(snapshotRepo, hubOptions...)
 
 	// ---- WS Gateway ----
-	gateway := ws.NewGateway(hub, jwtSvc, permSvc, userRepo)
+	gateway := ws.NewGateway(hub, jwtSvc, permSvc, userRepo, throttleSvc)
 
 	// ---- HTTP Server ----
 	mux := http.NewServeMux()
@@ -182,10 +199,6 @@ func main() {
 		pubsub.Close()
 	}
 
-	// Prevent unused variable warnings for optional dependencies.
-	_ = presenceRepo
-	_ = lockRepo
-	_ = throttleSvc
 }
 
 // ---- In-memory fallback snapshot store ----

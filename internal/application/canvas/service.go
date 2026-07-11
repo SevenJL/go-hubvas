@@ -9,11 +9,17 @@ import (
 	"github.com/hubvas/internal/domain/shared"
 )
 
+// CanvasCommunityRepository is the community projection surface used by canvas use cases.
+type CanvasCommunityRepository interface {
+	SavePublished(ctx context.Context, pc *communityDomain.PublishedCanvas) error
+	SaveFork(ctx context.Context, fork *communityDomain.Fork) error
+}
+
 // CanvasApplicationService orchestrates canvas-related use cases.
 type CanvasApplicationService struct {
 	canvasRepo    canvasDomain.CanvasRepository
 	snapshotRepo  canvasDomain.SnapshotRepository
-	communityRepo communityDomain.CommunityRepository
+	communityRepo CanvasCommunityRepository
 	idGen         shared.IDGenerator
 }
 
@@ -21,7 +27,7 @@ type CanvasApplicationService struct {
 func NewCanvasApplicationService(
 	canvasRepo canvasDomain.CanvasRepository,
 	snapshotRepo canvasDomain.SnapshotRepository,
-	communityRepo communityDomain.CommunityRepository,
+	communityRepo CanvasCommunityRepository,
 	idGen shared.IDGenerator,
 ) *CanvasApplicationService {
 	return &CanvasApplicationService{
@@ -146,6 +152,17 @@ func (s *CanvasApplicationService) Fork(ctx context.Context, sourceID canvasDoma
 	if err == nil && len(snapshot) > 0 {
 		_ = s.snapshotRepo.Save(ctx, newID, snapshot, thumbnail)
 		// Best-effort: fork succeeds even if snapshot copy fails.
+	}
+
+	// Published forks are part of the community graph. SaveFork also updates
+	// the source projection's fork counter atomically in the repository.
+	if source.Visibility().IsPublished() {
+		if err := s.communityRepo.SaveFork(ctx, communityDomain.NewFork(sourceID, newID, userID)); err != nil {
+			// Compensate the already-created canvas so callers do not receive an
+			// error while a hidden partial fork remains persisted.
+			_ = s.canvasRepo.Delete(ctx, newID)
+			return nil, err
+		}
 	}
 
 	return toCanvasDTO(fork, 0), nil

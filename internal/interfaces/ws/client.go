@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/hubvas/internal/domain/canvas"
 	"github.com/hubvas/internal/domain/collaboration"
 	"github.com/hubvas/internal/domain/identity"
 )
@@ -34,16 +35,19 @@ const (
 //   - readPump:  reads from WebSocket → pushes to Room.inbound
 //   - writePump: reads from Client.send channel → writes to WebSocket
 type Client struct {
-	UserID   identity.UserID
-	Username string
-	RoomID   collaboration.RoomID
-	Role     string
-	CanEdit  bool
+	UserID     identity.UserID
+	Username   string
+	RoomID     collaboration.RoomID
+	Role       string
+	DomainRole canvas.Role
+	AvatarURL  string
+	CanEdit    bool
 
-	conn   *websocket.Conn
-	send   chan []byte                   // buffered outbound channel
-	hub    *Hub                          // the room registry (for deregistration)
-	onRead func(collaboration.Operation) // callback to the Room's inbound
+	conn        *websocket.Conn
+	send        chan []byte                   // buffered outbound channel
+	hub         *Hub                          // the room registry (for deregistration)
+	onRead      func(collaboration.Operation) // callback to the Room's inbound
+	throttleSvc collaboration.ThrottleService
 
 	ctx       context.Context
 	cancel    context.CancelFunc
@@ -57,25 +61,30 @@ func NewClient(
 	userID identity.UserID,
 	username string,
 	roomID collaboration.RoomID,
-	role string,
+	role canvas.Role,
+	avatarURL string,
 	canEdit bool,
 	hub *Hub,
+	throttleSvc collaboration.ThrottleService,
 	onRead func(collaboration.Operation),
 ) *Client {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	c := &Client{
-		UserID:   userID,
-		Username: username,
-		RoomID:   roomID,
-		Role:     role,
-		CanEdit:  canEdit,
-		conn:     conn,
-		send:     make(chan []byte, sendBufferSize),
-		hub:      hub,
-		onRead:   onRead,
-		ctx:      ctx,
-		cancel:   cancel,
+		UserID:      userID,
+		Username:    username,
+		RoomID:      roomID,
+		Role:        role.String(),
+		DomainRole:  role,
+		AvatarURL:   avatarURL,
+		CanEdit:     canEdit,
+		conn:        conn,
+		send:        make(chan []byte, sendBufferSize),
+		hub:         hub,
+		onRead:      onRead,
+		throttleSvc: throttleSvc,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 
 	return c
@@ -121,6 +130,9 @@ func (c *Client) readPump() {
 				c.sendError("forbidden", "read-only clients cannot modify the canvas")
 				continue
 			}
+			if !c.allowOperation(collaboration.OpSync) {
+				continue
+			}
 			// Binary frame — raw Yjs CRDT update. Pass directly as a sync operation.
 			op := collaboration.Operation{
 				Type:    collaboration.OpSync,
@@ -148,6 +160,9 @@ func (c *Client) readPump() {
 				c.sendError("forbidden", "read-only clients cannot modify the canvas")
 				continue
 			}
+			if !c.allowOperation(collaboration.OpType(msg.Type)) {
+				continue
+			}
 			if msg.Type == MsgTypeAwareness || msg.Type == MsgTypeChat {
 				payload, err := authoritativePayload(msg.Payload, c.UserID, c.Username)
 				if err != nil {
@@ -166,6 +181,22 @@ func (c *Client) readPump() {
 			log.Printf("[ws] unsupported message type %d from user %d", msgType, c.UserID)
 		}
 	}
+}
+
+func (c *Client) allowOperation(opType collaboration.OpType) bool {
+	if c.throttleSvc == nil {
+		return true
+	}
+	allowed, err := c.throttleSvc.AllowOperation(c.ctx, c.UserID, c.RoomID, opType)
+	if err != nil {
+		c.sendError("throttle_unavailable", "unable to validate operation rate")
+		return false
+	}
+	if !allowed {
+		c.sendError("rate_limited", "too many operations")
+		return false
+	}
+	return true
 }
 
 func canSubmitOperation(canEdit bool, messageType string) bool {

@@ -41,8 +41,8 @@ const (
 			comment_count = EXCLUDED.comment_count,
 			fork_count   = EXCLUDED.fork_count`
 
-	communityDeleteTagsSQL     = `DELETE FROM canvas_tags WHERE canvas_id = $1`
-	communityInsertTagSQL      = `INSERT INTO canvas_tags (canvas_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING`
+	communityDeleteTagsSQL = `DELETE FROM canvas_tags WHERE canvas_id = $1`
+	communityInsertTagSQL  = `INSERT INTO canvas_tags (canvas_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING`
 
 	communitySelectPublishedSQL = `
 		SELECT canvas_id, author_id, title, snapshot_url, like_count, comment_count, fork_count, published_at
@@ -251,9 +251,9 @@ const (
 		INSERT INTO likes (canvas_id, user_id, created_at)
 		VALUES ($1, $2, $3)`
 
-	communityDeleteLikeSQL   = `DELETE FROM likes WHERE canvas_id = $1 AND user_id = $2`
-	communityHasLikedSQL     = `SELECT EXISTS(SELECT 1 FROM likes WHERE canvas_id = $1 AND user_id = $2)`
-	communityCountLikesSQL   = `SELECT COUNT(*) FROM likes WHERE canvas_id = $1`
+	communityDeleteLikeSQL = `DELETE FROM likes WHERE canvas_id = $1 AND user_id = $2`
+	communityHasLikedSQL   = `SELECT EXISTS(SELECT 1 FROM likes WHERE canvas_id = $1 AND user_id = $2)`
+	communityCountLikesSQL = `SELECT COUNT(*) FROM likes WHERE canvas_id = $1`
 )
 
 // SaveLike creates a new like.
@@ -391,12 +391,33 @@ const (
 	communityCountForksSQL = `SELECT COUNT(*) FROM forks WHERE original_canvas_id = $1`
 )
 
-// SaveFork records a fork relationship.
+// SaveFork records a fork relationship and increments the published source's
+// denormalized fork counter in the same transaction.
 func (r *CommunityRepo) SaveFork(ctx context.Context, fork *communityDomain.Fork) error {
-	_, err := r.pool.Exec(ctx, communityInsertForkSQL,
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, communityInsertForkSQL,
 		fork.OriginalCanvasID(), fork.NewCanvasID(), fork.UserID(), fork.CreatedAt(),
+	); err != nil {
+		return mapPgError(err)
+	}
+
+	tag, err := tx.Exec(ctx,
+		`UPDATE published_canvases SET fork_count = fork_count + 1 WHERE canvas_id = $1`,
+		fork.OriginalCanvasID(),
 	)
-	return mapPgError(err)
+	if err != nil {
+		return mapPgError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return shared.NewDomainError(shared.ErrNotFound, "published canvas not found")
+	}
+
+	return tx.Commit(ctx)
 }
 
 // FindForks returns paginated forks for a canvas.

@@ -26,6 +26,7 @@ type Gateway struct {
 	tokenSvc      TokenValidator
 	permissionSvc collaboration.PermissionService
 	userLookup    UserLookup
+	throttleSvc   collaboration.ThrottleService
 }
 
 // TokenValidator is the minimal interface for JWT validation.
@@ -45,12 +46,14 @@ func NewGateway(
 	tokenSvc TokenValidator,
 	permissionSvc collaboration.PermissionService,
 	userLookup UserLookup,
+	throttleSvc collaboration.ThrottleService,
 ) *Gateway {
 	return &Gateway{
 		hub:           hub,
 		tokenSvc:      tokenSvc,
 		permissionSvc: permissionSvc,
 		userLookup:    userLookup,
+		throttleSvc:   throttleSvc,
 	}
 }
 
@@ -96,10 +99,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	role, err := g.permissionSvc.GetRole(r.Context(), canvas.CanvasID(canvasID), userID)
-	roleName := canvas.RoleViewer.String()
 	canEdit := false
-	if err == nil {
-		roleName = role.String()
+	if err != nil {
+		role = canvas.RoleViewer
+	} else {
 		canEdit = role.CanEdit()
 	}
 	// A published non-member has view access but no membership role, so remains a read-only viewer.
@@ -108,6 +111,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, `{"code":"invalid_user","message":"authenticated user no longer exists"}`, http.StatusUnauthorized)
 		return
+	}
+	if g.throttleSvc != nil {
+		allowed, throttleErr := g.throttleSvc.AllowConnection(r.Context(), userID, collaboration.RoomID(canvasID))
+		if throttleErr != nil {
+			http.Error(w, `{"code":"throttle_unavailable","message":"unable to validate connection rate"}`, http.StatusServiceUnavailable)
+			return
+		}
+		if !allowed {
+			http.Error(w, `{"code":"rate_limited","message":"too many connection attempts"}`, http.StatusTooManyRequests)
+			return
+		}
 	}
 
 	// 4. Upgrade to WebSocket.
@@ -125,9 +139,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		userID,
 		user.Username(),
 		collaboration.RoomID(canvasID),
-		roleName,
+		role,
+		user.AvatarURL(),
 		canEdit,
 		g.hub,
+		g.throttleSvc,
 		nil, // onRead will be wired by Room.Register before pumps start
 	)
 

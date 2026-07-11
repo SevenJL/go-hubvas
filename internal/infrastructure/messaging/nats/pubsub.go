@@ -1,6 +1,8 @@
 package nats
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -19,7 +21,8 @@ import (
 //
 // Subject: canvas.{canvasID}
 type PubSub struct {
-	conn *natsgo.Conn
+	conn     *natsgo.Conn
+	sourceID string
 
 	mu   sync.Mutex
 	subs map[collaboration.RoomID]*natsgo.Subscription
@@ -28,13 +31,15 @@ type PubSub struct {
 // NewPubSub creates a PubSub backed by a NATS connection.
 func NewPubSub(conn *natsgo.Conn) *PubSub {
 	return &PubSub{
-		conn: conn,
-		subs: make(map[collaboration.RoomID]*natsgo.Subscription),
+		conn:     conn,
+		sourceID: newSourceID(),
+		subs:     make(map[collaboration.RoomID]*natsgo.Subscription),
 	}
 }
 
 // pubSubEnvelope wraps an Operation for JSON serialization over NATS.
 type pubSubEnvelope struct {
+	Source    string `json:"source"`
 	Type      string `json:"type"`
 	UserID    int64  `json:"user_id"`
 	Seq       int64  `json:"seq"`
@@ -45,6 +50,7 @@ type pubSubEnvelope struct {
 // Publish sends an operation to all other nodes hosting the same room.
 func (ps *PubSub) Publish(canvasID collaboration.RoomID, op collaboration.Operation) error {
 	env := pubSubEnvelope{
+		Source:    ps.sourceID,
 		Type:      string(op.Type),
 		UserID:    int64(op.UserID),
 		Seq:       op.Seq,
@@ -73,6 +79,9 @@ func (ps *PubSub) Subscribe(canvasID collaboration.RoomID, onOp func(collaborati
 		var env pubSubEnvelope
 		if err := json.Unmarshal(msg.Data, &env); err != nil {
 			return // Skip malformed messages.
+		}
+		if env.Source != "" && env.Source == ps.sourceID {
+			return // NATS delivers our own publish to local subscriptions; avoid loops.
 		}
 		onOp(collaboration.Operation{
 			Type:      collaboration.OpType(env.Type),
@@ -115,4 +124,12 @@ func (ps *PubSub) Close() {
 
 func subject(canvasID collaboration.RoomID) string {
 	return fmt.Sprintf("canvas.%d", canvasID)
+}
+
+func newSourceID() string {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return fmt.Sprintf("node-%p", &id)
+	}
+	return hex.EncodeToString(id[:])
 }

@@ -138,3 +138,58 @@ func TestThrottleService_ContextCancellation(t *testing.T) {
 		t.Fatal("expected error for cancelled context")
 	}
 }
+
+func TestThrottleService_ChatLimiterRefills(t *testing.T) {
+	svc := NewThrottleService()
+	lim := svc.newOpLimiter(collaboration.OpChat)
+	if lim.rate <= 0 {
+		t.Fatalf("chat limiter must refill, got rate %f", lim.rate)
+	}
+	if lim.rate != 10.0/60.0 {
+		t.Fatalf("expected 10 messages per minute, got %f tokens/second", lim.rate)
+	}
+}
+
+func TestThrottleService_RoomConnectionLimit(t *testing.T) {
+	svc := NewThrottleService()
+	ctx := context.Background()
+	roomID := collaboration.RoomID(1001)
+
+	for i := 0; i < 400; i++ {
+		allowed, err := svc.AllowConnection(ctx, identity.UserID(i+1), roomID)
+		if err != nil || !allowed {
+			t.Fatalf("expected room burst connection %d to pass: allowed=%v err=%v", i+1, allowed, err)
+		}
+	}
+	allowed, err := svc.AllowConnection(ctx, identity.UserID(401), roomID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allowed {
+		t.Fatal("expected room connection burst to be enforced")
+	}
+}
+
+func TestThrottleService_CleanupRefillsIdleLimiter(t *testing.T) {
+	svc := NewThrottleService()
+	uid := identity.UserID(1)
+	lim := NewTokenBucket(10, 1)
+	if !lim.Allow() {
+		t.Fatal("expected initial token")
+	}
+	lim.mu.Lock()
+	lim.lastRefill = time.Now().Add(-time.Second)
+	lim.mu.Unlock()
+
+	svc.mu.Lock()
+	svc.connLimiters[uid] = lim
+	svc.mu.Unlock()
+	svc.CleanupExpired()
+
+	svc.mu.Lock()
+	_, exists := svc.connLimiters[uid]
+	svc.mu.Unlock()
+	if exists {
+		t.Fatal("idle limiter should be removed after refilling")
+	}
+}

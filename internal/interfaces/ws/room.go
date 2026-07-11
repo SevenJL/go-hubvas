@@ -25,9 +25,9 @@ type Room struct {
 	domainRoom *collaboration.Room // domain aggregate
 	domainMu   sync.Mutex
 
-	// inbound is the serial processing queue. All client operations
-	// are pushed here by readPumps and processed by the Room goroutine.
-	inbound chan collaboration.Operation
+	// inbound queues local client operations; remoteInbound receives NATS fan-out.
+	inbound       chan collaboration.Operation
+	remoteInbound chan collaboration.Operation
 
 	// clients is the set of connected WebSocket clients.
 	clients   map[*Client]bool
@@ -37,30 +37,38 @@ type Room struct {
 	snapshotMu sync.RWMutex
 	snapshot   []byte
 
-	// snapshotRepo for periodic persistence.
+	// Optional persistence/distributed collaboration dependencies.
 	snapshotRepo collaboration.SnapshotRepository
+	presenceRepo collaboration.PresenceRepository
+	pubsub       OperationPubSub
 
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
 // NewRoom creates a new Room and starts its processing goroutine.
-func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotRepository, initialSnapshot []byte) *Room {
+func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotRepository, initialSnapshot []byte, pubsub OperationPubSub, presenceRepo collaboration.PresenceRepository) *Room {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	r := &Room{
-		domainRoom:   collaboration.NewRoom(id, cloneBytes(initialSnapshot)),
-		snapshot:     cloneBytes(initialSnapshot),
-		inbound:      make(chan collaboration.Operation, 1024),
-		clients:      make(map[*Client]bool),
-		snapshotRepo: snapshotRepo,
-		ctx:          ctx,
-		cancel:       cancel,
+		domainRoom:    collaboration.NewRoom(id, cloneBytes(initialSnapshot)),
+		snapshot:      cloneBytes(initialSnapshot),
+		inbound:       make(chan collaboration.Operation, 1024),
+		remoteInbound: make(chan collaboration.Operation, 1024),
+		clients:       make(map[*Client]bool),
+		snapshotRepo:  snapshotRepo,
+		presenceRepo:  presenceRepo,
+		pubsub:        pubsub,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 
 	go r.processLoop()
 	if snapshotRepo != nil {
 		go startSnapshotLoop(ctx, r, snapshotRepo)
+	}
+	if presenceRepo != nil {
+		go r.presenceHeartbeatLoop()
 	}
 
 	return r
@@ -73,13 +81,19 @@ func (r *Room) processLoop() {
 		case <-r.ctx.Done():
 			return
 		case op := <-r.inbound:
-			r.processOp(op)
+			r.processOp(op, true)
+		case op := <-r.remoteInbound:
+			r.processOp(op, false)
 		}
 	}
 }
 
 // processOp validates, applies, and broadcasts a single operation.
-func (r *Room) processOp(op collaboration.Operation) {
+func (r *Room) processOp(op collaboration.Operation, publish bool) {
+	if !publish && op.Type == collaboration.OpPresence {
+		r.broadcastPresence()
+		return
+	}
 	r.domainMu.Lock()
 	result, err := r.domainRoom.ProcessOp(op)
 	r.domainMu.Unlock()
@@ -93,14 +107,22 @@ func (r *Room) processOp(op collaboration.Operation) {
 		return
 	}
 	if result.Operation.Type == collaboration.OpSync {
-		r.setSnapshot(result.Operation.Payload)
+		r.setSnapshot(mergePersistedSnapshot(r.Snapshot(), result.Operation.Payload))
+	}
+	if result.Operation.Type == collaboration.OpAwareness {
+		r.updatePresenceFromAwareness(result.Operation)
+	}
+	if publish && r.pubsub != nil {
+		if err := r.pubsub.Publish(r.domainRoom.ID(), result.Operation); err != nil {
+			log.Printf("[room %d] failed to publish operation: %v", r.domainRoom.ID(), err)
+		}
 	}
 
 	// Sync operations received as binary frames (Yjs CRDT) → broadcast as binary.
 	// Sync operations received as text frames (JSON snapshot) → broadcast as text.
 	// We distinguish by checking if the payload looks like JSON (starts with '{').
 	if result.Operation.Type == collaboration.OpSync && len(result.Operation.Payload) > 0 {
-		if len(result.Operation.Payload) > 0 && result.Operation.Payload[0] == '{' {
+		if isJSONSnapshot(result.Operation.Payload) {
 			// JSON text sync — broadcast as text.
 			msg := FromOperation(result.Operation)
 			data, err := json.Marshal(msg)
@@ -230,14 +252,16 @@ func (r *Room) Register(client *Client) {
 	r.domainMu.Lock()
 	r.domainRoom.Join(client.UserID, client.Username)
 	r.domainMu.Unlock()
+	r.setClientPresence(client, nil)
 	client.Start()
 	r.sendInitialSnapshot(client)
 
 	log.Printf("[room %d] user %d (%s) joined (total: %d)",
 		r.domainRoom.ID(), client.UserID, client.Username, r.MemberCount())
 
-	// Broadcast full presence list to everyone.
+	// Broadcast full presence list locally and notify other nodes to refresh Redis presence.
 	r.broadcastPresence()
+	r.publishPresenceSignal(client.UserID)
 }
 
 func (r *Room) sendInitialSnapshot(client *Client) {
@@ -245,14 +269,21 @@ func (r *Room) sendInitialSnapshot(client *Client) {
 	if len(snapshot) == 0 {
 		return
 	}
-	if json.Valid(snapshot) {
+	if isJSONSnapshot(snapshot) {
 		data, err := json.Marshal(Message{Type: MsgTypeSync, Payload: snapshot})
 		if err == nil {
 			client.Send(data)
 		}
 		return
 	}
-	client.SendBinary(snapshot)
+	frames, err := decodeYjsSnapshot(snapshot)
+	if err != nil {
+		log.Printf("[room %d] invalid persisted Yjs snapshot: %v", r.domainRoom.ID(), err)
+		return
+	}
+	for _, frame := range frames {
+		client.SendBinary(frame)
+	}
 }
 
 func (r *Room) setSnapshot(data []byte) {
@@ -283,20 +314,118 @@ func (r *Room) Unregister(client *Client) {
 	delete(r.clients, client)
 	r.clientsMu.Unlock()
 
-	r.domainMu.Lock()
-	r.domainRoom.Leave(client.UserID)
-	r.domainMu.Unlock()
+	if !r.hasLocalUser(client.UserID) {
+		r.domainMu.Lock()
+		_ = r.domainRoom.Leave(client.UserID)
+		r.domainMu.Unlock()
+		r.removeClientPresence(client.UserID)
+	}
 
 	log.Printf("[room %d] user %d left (total: %d)",
 		r.domainRoom.ID(), client.UserID, r.MemberCount())
 
 	// Broadcast updated presence list.
 	r.broadcastPresence()
+	r.publishPresenceSignal(client.UserID)
+}
+
+const presenceTTL = 45 * time.Second
+
+func (r *Room) setClientPresence(client *Client, cursor *collaboration.CursorPosition) {
+	if r.presenceRepo == nil {
+		return
+	}
+	info := collaboration.PresenceInfo{
+		UserID: client.UserID, Username: client.Username, AvatarURL: client.AvatarURL,
+		Role: client.DomainRole, Cursor: cursor,
+	}
+	if err := r.presenceRepo.SetPresence(r.ctx, r.domainRoom.ID(), info, presenceTTL); err != nil {
+		log.Printf("[room %d] failed to set presence for user %d: %v", r.domainRoom.ID(), client.UserID, err)
+	}
+}
+
+func (r *Room) removeClientPresence(userID identity.UserID) {
+	if r.presenceRepo == nil {
+		return
+	}
+	if err := r.presenceRepo.RemovePresence(r.ctx, r.domainRoom.ID(), userID); err != nil {
+		log.Printf("[room %d] failed to remove presence for user %d: %v", r.domainRoom.ID(), userID, err)
+	}
+}
+
+func (r *Room) updatePresenceFromAwareness(op collaboration.Operation) {
+	if r.presenceRepo == nil {
+		return
+	}
+	var payload struct {
+		Cursor *collaboration.CursorPosition `json:"cursor"`
+	}
+	_ = json.Unmarshal(op.Payload, &payload)
+	r.clientsMu.RLock()
+	defer r.clientsMu.RUnlock()
+	for client := range r.clients {
+		if client.UserID == op.UserID {
+			r.setClientPresence(client, payload.Cursor)
+			return
+		}
+	}
+}
+
+func (r *Room) hasLocalUser(userID identity.UserID) bool {
+	r.clientsMu.RLock()
+	defer r.clientsMu.RUnlock()
+	for client := range r.clients {
+		if client.UserID == userID {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Room) publishPresenceSignal(userID identity.UserID) {
+	if r.pubsub == nil {
+		return
+	}
+	op := collaboration.Operation{Type: collaboration.OpPresence, UserID: userID, Timestamp: time.Now().UnixMilli()}
+	if err := r.pubsub.Publish(r.domainRoom.ID(), op); err != nil {
+		log.Printf("[room %d] failed to publish presence signal: %v", r.domainRoom.ID(), err)
+	}
+}
+
+func (r *Room) presenceHeartbeatLoop() {
+	ticker := time.NewTicker(presenceTTL / 3)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-r.ctx.Done():
+			return
+		case <-ticker.C:
+			r.clientsMu.RLock()
+			for client := range r.clients {
+				if err := r.presenceRepo.RefreshPresence(r.ctx, r.domainRoom.ID(), client.UserID, presenceTTL); err != nil {
+					log.Printf("[room %d] failed to refresh presence for user %d: %v", r.domainRoom.ID(), client.UserID, err)
+				}
+			}
+			r.clientsMu.RUnlock()
+		}
+	}
 }
 
 // broadcastPresence sends the full online member list to all connected clients.
 func (r *Room) broadcastPresence() {
 	members := r.buildPresenceList()
+	if r.presenceRepo != nil {
+		infos, err := r.presenceRepo.GetPresence(r.ctx, r.domainRoom.ID())
+		if err == nil {
+			members = make([]PresenceMember, 0, len(infos))
+			for _, info := range infos {
+				members = append(members, PresenceMember{
+					UserID: int64(info.UserID), Username: info.Username,
+					AvatarURL: info.AvatarURL, Role: info.Role.String(),
+				})
+			}
+		}
+	}
 	payload, _ := json.Marshal(map[string]interface{}{"online": members})
 	msg := Message{Type: MsgTypePresence, Payload: payload}
 	data, _ := json.Marshal(msg)
@@ -318,7 +447,7 @@ func (r *Room) buildPresenceList() []PresenceMember {
 		members = append(members, PresenceMember{
 			UserID:    int64(client.UserID),
 			Username:  client.Username,
-			AvatarURL: "",
+			AvatarURL: client.AvatarURL,
 			Role:      client.Role,
 		})
 	}
@@ -351,6 +480,16 @@ func (r *Room) IsIdle(timeout time.Duration) bool {
 func (r *Room) Shutdown() {
 	r.cancel()
 	// Final snapshot flush happens in startSnapshotLoop's cleanup.
+}
+
+// EnqueueRemote routes a cross-node operation without publishing it again.
+func (r *Room) EnqueueRemote(op collaboration.Operation) {
+	select {
+	case r.remoteInbound <- op:
+	case <-r.ctx.Done():
+	default:
+		log.Printf("[room %d] remote inbound full, dropping operation", r.domainRoom.ID())
+	}
 }
 
 // Inbound returns the inbound channel for testing/inspection.

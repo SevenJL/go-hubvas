@@ -9,10 +9,17 @@ import (
 	"github.com/hubvas/internal/domain/shared"
 )
 
+// UserLookup resolves public author information without coupling this service
+// to a concrete identity repository implementation.
+type UserLookup interface {
+	FindByID(ctx context.Context, id identity.UserID) (*identity.User, error)
+}
+
 // CommunityApplicationService orchestrates community-related use cases.
 type CommunityApplicationService struct {
 	communityRepo communityDomain.CommunityRepository
 	canvasRepo    canvasDomain.CanvasRepository
+	userLookup    UserLookup
 	idGen         shared.IDGenerator
 }
 
@@ -20,11 +27,13 @@ type CommunityApplicationService struct {
 func NewCommunityApplicationService(
 	communityRepo communityDomain.CommunityRepository,
 	canvasRepo canvasDomain.CanvasRepository,
+	userLookup UserLookup,
 	idGen shared.IDGenerator,
 ) *CommunityApplicationService {
 	return &CommunityApplicationService{
 		communityRepo: communityRepo,
 		canvasRepo:    canvasRepo,
+		userLookup:    userLookup,
 		idGen:         idGen,
 	}
 }
@@ -60,10 +69,16 @@ func (s *CommunityApplicationService) Browse(ctx context.Context, req SearchRequ
 	}
 
 	items := make([]PublishedCanvasDTO, len(published))
+	authorNames := make(map[identity.UserID]string)
 	for i, p := range published {
+		authorName, err := s.resolveAuthorName(ctx, p.AuthorID(), authorNames)
+		if err != nil {
+			return nil, err
+		}
 		items[i] = PublishedCanvasDTO{
 			CanvasID:     int64(p.CanvasID()),
 			AuthorID:     int64(p.AuthorID()),
+			AuthorName:   authorName,
 			Title:        p.Title(),
 			SnapshotURL:  p.SnapshotURL(),
 			Tags:         p.Tags(),
@@ -155,6 +170,10 @@ func (s *CommunityApplicationService) PostComment(
 		return nil, err
 	}
 
+	authorName, err := s.resolveAuthorName(ctx, authorID, nil)
+	if err != nil {
+		return nil, err
+	}
 	if err := s.communityRepo.SaveComment(ctx, comment); err != nil {
 		return nil, err
 	}
@@ -165,14 +184,17 @@ func (s *CommunityApplicationService) PostComment(
 		return nil, err
 	}
 	published.IncrementComment()
-	s.communityRepo.SavePublished(ctx, published)
+	if err := s.communityRepo.SavePublished(ctx, published); err != nil {
+		return nil, err
+	}
 
 	return &CommentDTO{
-		ID:        int64(comment.ID()),
-		CanvasID:  int64(comment.CanvasID()),
-		AuthorID:  int64(comment.AuthorID()),
-		Content:   comment.Content(),
-		CreatedAt: comment.CreatedAt().Unix(),
+		ID:         int64(comment.ID()),
+		CanvasID:   int64(comment.CanvasID()),
+		AuthorID:   int64(comment.AuthorID()),
+		AuthorName: authorName,
+		Content:    comment.Content(),
+		CreatedAt:  comment.CreatedAt().Unix(),
 	}, nil
 }
 
@@ -189,14 +211,38 @@ func (s *CommunityApplicationService) GetComments(
 	}
 
 	dtos := make([]CommentDTO, len(comments))
+	authorNames := make(map[identity.UserID]string)
 	for i, c := range comments {
+		authorName, err := s.resolveAuthorName(ctx, c.AuthorID(), authorNames)
+		if err != nil {
+			return nil, 0, err
+		}
 		dtos[i] = CommentDTO{
-			ID:        int64(c.ID()),
-			CanvasID:  int64(c.CanvasID()),
-			AuthorID:  int64(c.AuthorID()),
-			Content:   c.Content(),
-			CreatedAt: c.CreatedAt().Unix(),
+			ID:         int64(c.ID()),
+			CanvasID:   int64(c.CanvasID()),
+			AuthorID:   int64(c.AuthorID()),
+			AuthorName: authorName,
+			Content:    c.Content(),
+			CreatedAt:  c.CreatedAt().Unix(),
 		}
 	}
 	return dtos, total, nil
+}
+
+func (s *CommunityApplicationService) resolveAuthorName(ctx context.Context, userID identity.UserID, cache map[identity.UserID]string) (string, error) {
+	if name, ok := cache[userID]; ok {
+		return name, nil
+	}
+	user, err := s.userLookup.FindByID(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if user == nil {
+		return "", shared.NewDomainError(shared.ErrNotFound, "author not found")
+	}
+	name := user.Username()
+	if cache != nil {
+		cache[userID] = name
+	}
+	return name, nil
 }

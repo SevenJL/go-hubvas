@@ -20,6 +20,24 @@ const (
 	snapshotInterval = 30 * time.Second
 )
 
+// OperationPubSub fans room operations out to other WebSocket server nodes.
+type OperationPubSub interface {
+	Publish(canvasID collaboration.RoomID, op collaboration.Operation) error
+	Subscribe(canvasID collaboration.RoomID, onOp func(collaboration.Operation)) error
+	Unsubscribe(canvasID collaboration.RoomID) error
+}
+
+// HubOption configures optional distributed collaboration dependencies.
+type HubOption func(*Hub)
+
+func WithPubSub(pubsub OperationPubSub) HubOption {
+	return func(h *Hub) { h.pubsub = pubsub }
+}
+
+func WithPresenceRepository(repo collaboration.PresenceRepository) HubOption {
+	return func(h *Hub) { h.presenceRepo = repo }
+}
+
 // Hub is the central registry of all active Rooms.
 // It implements the application/collaboration.RoomManager interface.
 //
@@ -33,6 +51,8 @@ type Hub struct {
 	rooms map[collaboration.RoomID]*Room
 
 	snapshotRepo collaboration.SnapshotRepository
+	presenceRepo collaboration.PresenceRepository
+	pubsub       OperationPubSub
 
 	// register and unregister channels for clients.
 	register   chan *Client
@@ -43,7 +63,7 @@ type Hub struct {
 }
 
 // NewHub creates and starts the Hub.
-func NewHub(snapshotRepo collaboration.SnapshotRepository) *Hub {
+func NewHub(snapshotRepo collaboration.SnapshotRepository, options ...HubOption) *Hub {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	h := &Hub{
@@ -53,6 +73,9 @@ func NewHub(snapshotRepo collaboration.SnapshotRepository) *Hub {
 		unregister:   make(chan *Client),
 		ctx:          ctx,
 		cancel:       cancel,
+	}
+	for _, option := range options {
+		option(h)
 	}
 
 	go h.run()
@@ -83,8 +106,9 @@ func (h *Hub) handleRegister(client *Client) {
 	h.mu.Lock()
 	room, exists := h.rooms[client.RoomID]
 	if !exists {
-		room = NewRoom(client.RoomID, h.snapshotRepo, h.loadSnapshot(client.RoomID))
+		room = NewRoom(client.RoomID, h.snapshotRepo, h.loadSnapshot(client.RoomID), h.pubsub, h.presenceRepo)
 		h.rooms[client.RoomID] = room
+		h.subscribeRoom(room)
 		log.Printf("[hub] created room %d", client.RoomID)
 	}
 	h.mu.Unlock()
@@ -129,8 +153,27 @@ func (h *Hub) collectGarbage() {
 		if room.IsIdle(idleTimeout) {
 			log.Printf("[hub] unloading idle room %d", id)
 			room.Shutdown()
+			h.unsubscribeRoom(id)
 			delete(h.rooms, id)
 		}
+	}
+}
+
+func (h *Hub) subscribeRoom(room *Room) {
+	if h.pubsub == nil {
+		return
+	}
+	if err := h.pubsub.Subscribe(room.DomainRoom().ID(), room.EnqueueRemote); err != nil {
+		log.Printf("[hub] failed to subscribe room %d: %v", room.DomainRoom().ID(), err)
+	}
+}
+
+func (h *Hub) unsubscribeRoom(roomID collaboration.RoomID) {
+	if h.pubsub == nil {
+		return
+	}
+	if err := h.pubsub.Unsubscribe(roomID); err != nil {
+		log.Printf("[hub] failed to unsubscribe room %d: %v", roomID, err)
 	}
 }
 
@@ -155,8 +198,9 @@ func (h *Hub) GetOrCreate(roomID collaboration.RoomID) *collaboration.Room {
 		return r.DomainRoom()
 	}
 
-	room := NewRoom(roomID, h.snapshotRepo, h.loadSnapshot(roomID))
+	room := NewRoom(roomID, h.snapshotRepo, h.loadSnapshot(roomID), h.pubsub, h.presenceRepo)
 	h.rooms[roomID] = room
+	h.subscribeRoom(room)
 	log.Printf("[hub] created room %d", roomID)
 	return room.DomainRoom()
 }
@@ -179,6 +223,7 @@ func (h *Hub) Remove(roomID collaboration.RoomID) {
 
 	if room, ok := h.rooms[roomID]; ok {
 		room.Shutdown()
+		h.unsubscribeRoom(roomID)
 		delete(h.rooms, roomID)
 	}
 }
@@ -201,6 +246,7 @@ func (h *Hub) Shutdown() {
 	for id, room := range h.rooms {
 		log.Printf("[hub] persisting room %d before shutdown", id)
 		room.Shutdown()
+		h.unsubscribeRoom(id)
 	}
 }
 

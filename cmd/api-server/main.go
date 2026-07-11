@@ -81,6 +81,7 @@ func main() {
 	communityAppSvc := appCommunity.NewCommunityApplicationService(
 		communityRepo,
 		canvasRepo,
+		userRepo,
 		&snowflakeIDAdapter{sf: idGen},
 	)
 
@@ -160,8 +161,8 @@ func main() {
 func loadConfig() config.Config {
 	return config.Config{
 		Server: config.ServerConfig{
-			APIHost:    envOrDefault("API_HOST", "0.0.0.0"),
-			APIPort:    8080,
+			APIHost:      envOrDefault("API_HOST", "0.0.0.0"),
+			APIPort:      8080,
 			ReadTimeout:  30 * time.Second,
 			WriteTimeout: 30 * time.Second,
 		},

@@ -20,9 +20,9 @@ type TokenBucket struct {
 }
 
 // NewTokenBucket creates a token bucket with the given rate and burst.
-func NewTokenBucket(ratePerSec, burst int) *TokenBucket {
+func NewTokenBucket(ratePerSec float64, burst int) *TokenBucket {
 	return &TokenBucket{
-		rate:       float64(ratePerSec),
+		rate:       ratePerSec,
 		burst:      float64(burst),
 		tokens:     float64(burst), // start full
 		lastRefill: time.Now(),
@@ -50,6 +50,13 @@ func (b *TokenBucket) refill() {
 	b.lastRefill = now
 }
 
+func (b *TokenBucket) isFull() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.refill()
+	return b.tokens >= b.burst
+}
+
 // ThrottleService implements collaboration.ThrottleService using per-connection
 // and per-user token buckets stored in memory.
 //
@@ -64,8 +71,9 @@ func (b *TokenBucket) refill() {
 type ThrottleService struct {
 	mu sync.Mutex
 
-	// Global connection limiter per user.
-	connLimiters map[identity.UserID]*TokenBucket
+	// Connection limiters per user and per room.
+	connLimiters     map[identity.UserID]*TokenBucket
+	roomConnLimiters map[collaboration.RoomID]*TokenBucket
 
 	// Operation limiters: per user per room per op type.
 	opLimiters map[opLimiterKey]*TokenBucket
@@ -80,8 +88,9 @@ type opLimiterKey struct {
 // NewThrottleService creates a ThrottleService with sensible defaults.
 func NewThrottleService() *ThrottleService {
 	return &ThrottleService{
-		connLimiters: make(map[identity.UserID]*TokenBucket),
-		opLimiters:   make(map[opLimiterKey]*TokenBucket),
+		connLimiters:     make(map[identity.UserID]*TokenBucket),
+		roomConnLimiters: make(map[collaboration.RoomID]*TokenBucket),
+		opLimiters:       make(map[opLimiterKey]*TokenBucket),
 	}
 }
 
@@ -94,15 +103,24 @@ func (s *ThrottleService) AllowConnection(ctx context.Context, userID identity.U
 	}
 
 	s.mu.Lock()
-	lim, ok := s.connLimiters[userID]
+	userLimiter, ok := s.connLimiters[userID]
 	if !ok {
-		// 5 connections per second, burst up to 10
-		lim = NewTokenBucket(5, 10)
-		s.connLimiters[userID] = lim
+		// 5 connections per second, burst up to 10.
+		userLimiter = NewTokenBucket(5, 10)
+		s.connLimiters[userID] = userLimiter
+	}
+	roomLimiter, ok := s.roomConnLimiters[roomID]
+	if !ok {
+		// 200 connections per second, burst up to 400.
+		roomLimiter = NewTokenBucket(200, 400)
+		s.roomConnLimiters[roomID] = roomLimiter
 	}
 	s.mu.Unlock()
 
-	return lim.Allow(), nil
+	if !roomLimiter.Allow() {
+		return false, nil
+	}
+	return userLimiter.Allow(), nil
 }
 
 // AllowOperation checks whether an operation is within the user's rate limit.
@@ -130,13 +148,13 @@ func (s *ThrottleService) newOpLimiter(opType collaboration.OpType) *TokenBucket
 	switch opType {
 	case collaboration.OpChat:
 		// 10 chat messages per minute
-		return NewTokenBucket(10/60, 5)
+		return NewTokenBucket(10.0/60.0, 5)
 	case collaboration.OpAwareness:
 		// 60 awareness updates per minute
-		return NewTokenBucket(60/60, 30)
+		return NewTokenBucket(1, 30)
 	default:
 		// 60 sync ops per minute
-		return NewTokenBucket(60/60, 30)
+		return NewTokenBucket(1, 30)
 	}
 }
 
@@ -146,22 +164,21 @@ func (s *ThrottleService) CleanupExpired() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Clean connection limiters that are full (idle users).
+	// Clean limiters that have refilled to their full burst capacity.
 	for uid, lim := range s.connLimiters {
-		lim.mu.Lock()
-		if lim.tokens >= lim.burst {
+		if lim.isFull() {
 			delete(s.connLimiters, uid)
 		}
-		lim.mu.Unlock()
 	}
-
-	// Clean op limiters that are full (idle users).
+	for roomID, lim := range s.roomConnLimiters {
+		if lim.isFull() {
+			delete(s.roomConnLimiters, roomID)
+		}
+	}
 	for key, lim := range s.opLimiters {
-		lim.mu.Lock()
-		if lim.tokens >= lim.burst {
+		if lim.isFull() {
 			delete(s.opLimiters, key)
 		}
-		lim.mu.Unlock()
 	}
 }
 
