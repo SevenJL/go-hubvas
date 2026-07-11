@@ -14,10 +14,10 @@ interface UseYjsProviderOptions {
 interface UseYjsProviderResult {
   doc: Y.Doc;
   connected: boolean;
-  awareness: Map<number, { x: number; y: number; username: string; color: string }>;
+  awareness: Map<string, { x: number; y: number; pageId?: string; username: string; color: string }>;
   onlineUsers: PresenceMember[];
   sendSync: (update: Uint8Array) => void;
-  sendAwareness: (cursor: { x: number; y: number } | null, selection?: unknown) => void;
+  sendAwareness: (cursor: { x: number; y: number; pageId?: string } | null, selection?: unknown) => void;
   /** Send a JSON text message (type + payload) over the WebSocket. */
   sendTextMessage: (type: string, payload: unknown) => void;
 }
@@ -48,7 +48,7 @@ export function useYjsProvider({
   const [connected, setConnected] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<PresenceMember[]>([]);
   const [awareness, setAwareness] = useState<
-    Map<number, { x: number; y: number; username: string; color: string }>
+    Map<string, { x: number; y: number; pageId?: string; username: string; color: string }>
   >(new Map());
 
   useEffect(() => {
@@ -97,17 +97,23 @@ export function useYjsProvider({
             const p = msg.payload as {
               user_id?: string;
               username?: string;
-              cursor?: { x: number; y: number };
+              cursor?: { x: number; y: number; pageId?: string } | null;
             } | undefined;
-            if (p?.cursor) {
+            if (p && 'cursor' in p) {
               setAwareness(prev => {
                 const next = new Map(prev);
-                next.set(Number(p.user_id || '0'), {
-                  x: p.cursor!.x,
-                  y: p.cursor!.y,
-                  username: p.username || 'Unknown',
-                  color: stringToColor(p.user_id || '0'),
-                });
+                const remoteUserId = p.user_id || '0';
+                if (!p.cursor) {
+                  next.delete(remoteUserId);
+                } else {
+                  next.set(remoteUserId, {
+                    x: p.cursor.x,
+                    y: p.cursor.y,
+                    pageId: p.cursor.pageId,
+                    username: p.username || 'Unknown',
+                    color: stringToColor(p.user_id || '0'),
+                  });
+                }
                 return next;
               });
             }
@@ -177,7 +183,7 @@ export function useYjsProvider({
   }, []);
 
   const sendAwareness = useCallback(
-    (cursor: { x: number; y: number } | null, selection?: unknown) => {
+    (cursor: { x: number; y: number; pageId?: string } | null, selection?: unknown) => {
       sendTextMessage('awareness', { cursor, selection, user_id: userId, username });
     },
     [userId, username, sendTextMessage],

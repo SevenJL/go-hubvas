@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { Tldraw } from '@tldraw/tldraw';
-import type { TLComponents } from 'tldraw';
+import type { Editor as TldrawEditor, TLComponents } from '@tldraw/tldraw';
 import '@tldraw/tldraw/tldraw.css';
 import { canvasService } from '../services/canvas';
 import { getAccessToken } from '../services/api';
@@ -13,12 +13,36 @@ import { OnlineUsers } from '../components/canvas/OnlineUsers';
 import type { CanvasInfo } from '../types';
 import { ArrowLeft, Globe, EyeOff } from 'lucide-react';
 
-function RemoteCursors({ cursors }: { cursors: Map<number, { x: number; y: number; username: string; color: string }> }) {
-  if (cursors.size === 0) return null;
+function RemoteCursors({
+  cursors,
+  editor,
+  viewportRevision,
+}: {
+  cursors: Map<string, { x: number; y: number; pageId?: string; username: string; color: string }>;
+  editor: TldrawEditor | null;
+  viewportRevision: number;
+}) {
+  // viewportRevision intentionally invalidates this projection after pan/zoom.
+  void viewportRevision;
+  if (cursors.size === 0 || !editor) return null;
+
+  const containerBounds = editor.getContainer().getBoundingClientRect();
+  const currentPageId = editor.getCurrentPageId();
+  const projected = Array.from(cursors.entries()).flatMap(([uid, cursor]) => {
+    if (cursor.pageId && cursor.pageId !== currentPageId) return [];
+    const screenPoint = editor.pageToScreen(cursor);
+    return [{
+      uid,
+      ...cursor,
+      x: screenPoint.x - containerBounds.left,
+      y: screenPoint.y - containerBounds.top,
+    }];
+  });
+
   return (
     <>
-      {Array.from(cursors.entries()).map(([uid, pos]) => (
-        <div key={uid} className="absolute pointer-events-none" style={{ left: pos.x, top: pos.y, zIndex: 1000, transition: 'left 0.08s linear, top 0.08s linear' }}>
+      {projected.map((pos) => (
+        <div key={pos.uid} className="absolute pointer-events-none" style={{ left: pos.x, top: pos.y, zIndex: 1000, transition: 'left 0.04s linear, top 0.04s linear' }}>
           <svg width="18" height="18" viewBox="0 0 18 18">
             <path d="M3 1l12 12l-5 1l-3 4l-2-1l3-5z" fill={pos.color} stroke="white" strokeWidth="0.5" />
           </svg>
@@ -36,6 +60,8 @@ export function Editor() {
   const [canvas, setCanvas] = useState<CanvasInfo | null>(null);
   const [loadError, setLoadError] = useState('');
   const [publishing, setPublishing] = useState(false);
+  const [editorInstance, setEditorInstance] = useState<TldrawEditor | null>(null);
+  const [viewportRevision, setViewportRevision] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -81,10 +107,10 @@ export function Editor() {
   const sendAwarenessRef = useRef(sendAwareness);
   useEffect(() => { sendAwarenessRef.current = sendAwareness; }, [sendAwareness]);
 
-  const handleCursorMove = useCallback((cursor: { x: number; y: number } | null) => {
+  const handleCursorMove = useCallback((cursor: { x: number; y: number; pageId?: string } | null) => {
     if (!canEdit) return;
     const now = Date.now();
-    if (now - awarenessThrottle.current < 24) return;
+    if (cursor && now - awarenessThrottle.current < 24) return;
     awarenessThrottle.current = now;
     sendAwarenessRef.current(cursor);
   }, [canEdit]);
@@ -108,6 +134,28 @@ export function Editor() {
   const handleMount = useCallback(
     (editor: Parameters<typeof onTldrawMount>[0]) => {
       onTldrawMount(editor);
+      setEditorInstance(editor);
+
+      let viewportFrame: number | undefined;
+      let pointerInside = false;
+      const unlistenViewport = editor.store.listen(({ changes }) => {
+        const changedIds = [
+          ...Object.keys(changes.added),
+          ...Object.keys(changes.updated),
+          ...Object.keys(changes.removed),
+        ];
+        if (!changedIds.some((recordId) => recordId.startsWith('camera:') || recordId.startsWith('instance:'))) return;
+        if (viewportFrame === undefined) {
+          viewportFrame = requestAnimationFrame(() => {
+            viewportFrame = undefined;
+            setViewportRevision((revision) => revision + 1);
+            if (canEdit && pointerInside) {
+              const pagePoint = editor.inputs.getCurrentPagePoint();
+              handleCursorMove({ x: pagePoint.x, y: pagePoint.y, pageId: editor.getCurrentPageId() });
+            }
+          });
+        }
+      }, { scope: 'session' });
 
       // Read-only mode: lock editing + hide UI.
       if (!canEdit) {
@@ -118,10 +166,34 @@ export function Editor() {
       // Pointer tracking for awareness (editors only).
       if (canEdit) {
         const container = editor.getContainer();
-        const onPointerMove = (e: PointerEvent) => handleCursorMove({ x: e.clientX - container.getBoundingClientRect().left, y: e.clientY - container.getBoundingClientRect().top });
+        const onPointerMove = (event: PointerEvent) => {
+          pointerInside = true;
+          const pagePoint = editor.screenToPage({ x: event.clientX, y: event.clientY });
+          handleCursorMove({ x: pagePoint.x, y: pagePoint.y, pageId: editor.getCurrentPageId() });
+        };
+        const onPointerLeave = () => {
+          pointerInside = false;
+          handleCursorMove(null);
+        };
         container.addEventListener('pointermove', onPointerMove);
+        container.addEventListener('pointerleave', onPointerLeave);
         const origDispose = editor.dispose.bind(editor);
-        editor.dispose = () => { container.removeEventListener('pointermove', onPointerMove); origDispose(); };
+        editor.dispose = () => {
+          container.removeEventListener('pointermove', onPointerMove);
+          container.removeEventListener('pointerleave', onPointerLeave);
+          unlistenViewport();
+          if (viewportFrame !== undefined) cancelAnimationFrame(viewportFrame);
+          setEditorInstance(null);
+          origDispose();
+        };
+      } else {
+        const origDispose = editor.dispose.bind(editor);
+        editor.dispose = () => {
+          unlistenViewport();
+          if (viewportFrame !== undefined) cancelAnimationFrame(viewportFrame);
+          setEditorInstance(null);
+          origDispose();
+        };
       }
     },
     [onTldrawMount, handleCursorMove, canEdit],
@@ -169,7 +241,7 @@ export function Editor() {
         {/* tldraw canvas */}
         <div className="flex-1 relative" ref={containerRef}>
           <Tldraw onMount={handleMount} components={tldrawComponents} />
-          <RemoteCursors cursors={awareness} />
+          <RemoteCursors cursors={awareness} editor={editorInstance} viewportRevision={viewportRevision} />
         </div>
       </div>
     </Layout>
