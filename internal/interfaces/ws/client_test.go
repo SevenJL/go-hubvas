@@ -14,8 +14,14 @@ func TestCanSubmitOperation(t *testing.T) {
 	if !canSubmitOperation(true, MsgTypeSync) {
 		t.Fatal("editors should be allowed to submit sync operations")
 	}
+	if canSubmitOperation(false, MsgTypeLock) || canSubmitOperation(false, MsgTypeUnlock) {
+		t.Fatal("read-only clients must not be allowed to manage object locks")
+	}
 	if !canSubmitOperation(false, MsgTypeAwareness) {
 		t.Fatal("read-only clients should still be allowed to submit awareness updates")
+	}
+	if !isServerOnlyMessage(MsgTypeLockState) || isServerOnlyMessage(MsgTypeLock) {
+		t.Fatal("lock state must be server-only while lock requests remain client-submittable")
 	}
 }
 

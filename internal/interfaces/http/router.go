@@ -45,6 +45,10 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	r.GET("/api/community", cfg.CommunityHandler.Browse)
 	r.GET("/api/community/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.GetPublished)
 
+	// Static canvas routes must be registered before the public /:id wildcard.
+	// Otherwise Gin routes /api/canvases/shared to CanvasHandler.Get with id="shared".
+	r.GET("/api/canvases/shared", middleware.AuthMiddleware(cfg.TokenSvc), cfg.CanvasHandler.ListShared)
+
 	// Canvas detail — public (for published canvases).
 	r.GET("/api/canvases/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CanvasHandler.Get)
 	r.GET("/api/canvases/:id/comments", cfg.CommunityHandler.GetComments)
@@ -63,7 +67,6 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// Canvases (write operations)
 		api.POST("/canvases", cfg.CanvasHandler.Create)
 		api.GET("/canvases", cfg.CanvasHandler.ListMine)
-		api.GET("/canvases/shared", cfg.CanvasHandler.ListShared)
 		api.GET("/canvases/:id/members", cfg.CanvasHandler.ListMembers)
 		api.POST("/canvases/:id/members", cfg.CanvasHandler.AddMember)
 		api.PUT("/canvases/:id/members/:userId", cfg.CanvasHandler.UpdateMemberRole)

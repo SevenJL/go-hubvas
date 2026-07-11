@@ -17,14 +17,18 @@ interface UseYjsProviderResult {
   connected: boolean;
   awareness: Map<string, { x: number; y: number; pageId?: string; username: string; color: string }>;
   onlineUsers: PresenceMember[];
+  locks: Map<string, string>;
   sendSync: (update: Uint8Array) => void;
   sendAwareness: (cursor: { x: number; y: number; pageId?: string } | null, selection?: unknown) => void;
+  lockObject: (objectId: string) => void;
+  unlockObject: (objectId: string) => void;
   /** Send a JSON text message (type + payload) over the WebSocket. */
   sendTextMessage: (type: string, payload: unknown) => void;
 }
 
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
+const LOCK_STATE_TTL_MS = 20000;
 
 function toArrayBuffer(update: Uint8Array): ArrayBuffer {
   return new Uint8Array(update).buffer;
@@ -53,6 +57,8 @@ export function useYjsProvider({
 
   const [connected, setConnected] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<PresenceMember[]>([]);
+  const lockExpiriesRef = useRef(new Map<string, number>());
+  const [locks, setLocks] = useState<Map<string, string>>(new Map());
   const [awareness, setAwareness] = useState<
     Map<string, { x: number; y: number; pageId?: string; username: string; color: string }>
   >(new Map());
@@ -136,6 +142,26 @@ export function useYjsProvider({
             if (p?.online) setOnlineUsers(p.online);
             break;
           }
+          case 'lock_state': {
+            const p = msg.payload as {
+              object_id?: string;
+              user_id?: string | number;
+              locked?: boolean;
+            } | undefined;
+            if (!p?.object_id) break;
+            setLocks(prev => {
+              const next = new Map(prev);
+              if (p.locked && p.user_id !== undefined) {
+                next.set(p.object_id!, String(p.user_id));
+                lockExpiriesRef.current.set(p.object_id!, Date.now() + LOCK_STATE_TTL_MS);
+              } else {
+                next.delete(p.object_id!);
+                lockExpiriesRef.current.delete(p.object_id!);
+              }
+              return next;
+            });
+            break;
+          }
           case 'error': {
             const p = msg.payload as { message?: string } | undefined;
             if (p?.message) console.warn('[ws] server error:', p.message);
@@ -149,6 +175,8 @@ export function useYjsProvider({
 
     ws.onclose = () => {
       setConnected(false);
+      setLocks(new Map());
+      lockExpiriesRef.current.clear();
       if (wsRef.current === ws) wsRef.current = null;
       if (!shouldReconnectRef.current) return;
 
@@ -186,6 +214,23 @@ export function useYjsProvider({
     return () => doc.off('update', handler);
   }, [doc]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      setLocks(prev => {
+        let changed = false;
+        const next = new Map(prev);
+        for (const [objectId, expiresAt] of lockExpiriesRef.current) {
+          if (expiresAt > now) continue;
+          lockExpiriesRef.current.delete(objectId);
+          changed = next.delete(objectId) || changed;
+        }
+        return changed ? next : prev;
+      });
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   useEffect(() => () => doc.destroy(), [doc]);
 
   const sendSync = useCallback((update: Uint8Array) => {
@@ -201,7 +246,18 @@ export function useYjsProvider({
     [userId, username, sendTextMessage],
   );
 
-  return { doc, connected, awareness, onlineUsers, sendSync, sendAwareness, sendTextMessage };
+  const lockObject = useCallback((objectId: string) => {
+    if (canEdit) sendTextMessage('lock', { object_id: objectId });
+  }, [canEdit, sendTextMessage]);
+
+  const unlockObject = useCallback((objectId: string) => {
+    if (canEdit) sendTextMessage('unlock', { object_id: objectId });
+  }, [canEdit, sendTextMessage]);
+
+  return {
+    doc, connected, awareness, onlineUsers, locks,
+    sendSync, sendAwareness, lockObject, unlockObject, sendTextMessage,
+  };
 }
 
 function stringToColor(str: string): string {

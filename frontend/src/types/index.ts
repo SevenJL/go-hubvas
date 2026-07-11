@@ -90,7 +90,7 @@ export interface CommentListResponse {
 }
 
 // ---- WebSocket ----
-export type WSMessageType = 'sync' | 'awareness' | 'presence' | 'chat' | 'ack' | 'error';
+export type WSMessageType = 'sync' | 'awareness' | 'presence' | 'chat' | 'lock' | 'unlock' | 'lock_state' | 'ack' | 'error';
 
 export interface WSMessage {
   type: WSMessageType;

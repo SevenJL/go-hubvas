@@ -3,7 +3,9 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +49,7 @@ type Room struct {
 	// Optional persistence/distributed collaboration dependencies.
 	snapshotRepo collaboration.SnapshotRepository
 	presenceRepo collaboration.PresenceRepository
+	lockRepo     collaboration.LockRepository
 	pubsub       OperationPubSub
 
 	ctx    context.Context
@@ -54,7 +57,7 @@ type Room struct {
 }
 
 // NewRoom creates a new Room and starts its processing goroutine.
-func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotRepository, initialSnapshot []byte, pubsub OperationPubSub, presenceRepo collaboration.PresenceRepository) *Room {
+func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotRepository, initialSnapshot []byte, pubsub OperationPubSub, presenceRepo collaboration.PresenceRepository, lockRepo collaboration.LockRepository) *Room {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	r := &Room{
@@ -66,6 +69,7 @@ func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotReposit
 		clients:       make(map[*Client]bool),
 		snapshotRepo:  snapshotRepo,
 		presenceRepo:  presenceRepo,
+		lockRepo:      lockRepo,
 		pubsub:        pubsub,
 		ctx:           ctx,
 		cancel:        cancel,
@@ -104,6 +108,23 @@ func (r *Room) processOp(op collaboration.Operation, publish bool) {
 }
 
 func (r *Room) processOpFrom(op collaboration.Operation, publish bool, source *Client) {
+	switch op.Type {
+	case collaboration.OpLock:
+		if publish {
+			r.processLock(op, source)
+		}
+		return
+	case collaboration.OpUnlock:
+		if publish {
+			r.processUnlock(op, source)
+		}
+		return
+	case collaboration.OpLockState:
+		if !publish {
+			r.processRemoteLockState(op)
+		}
+		return
+	}
 	if !publish && op.Type == collaboration.OpPresence {
 		r.broadcastPresence()
 		return
@@ -158,6 +179,167 @@ func (r *Room) processOpFrom(op collaboration.Operation, publish bool, source *C
 	if result.Operation.Type == collaboration.OpSync && !isRealtimeTldrawDiff(result.Operation.Payload) {
 		r.mergeSnapshot(result.Operation.Payload)
 	}
+}
+
+const (
+	objectLockTTL      = 15 * time.Second
+	maxLockObjectIDLen = 256
+)
+
+func parseLockPayload(data []byte) (LockPayload, error) {
+	var payload LockPayload
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return LockPayload{}, err
+	}
+	payload.ObjectID = strings.TrimSpace(payload.ObjectID)
+	if payload.ObjectID == "" || len(payload.ObjectID) > maxLockObjectIDLen {
+		return LockPayload{}, fmt.Errorf("object_id must contain 1-%d bytes", maxLockObjectIDLen)
+	}
+	return payload, nil
+}
+
+func (r *Room) processLock(op collaboration.Operation, source *Client) {
+	if source == nil || !source.CanEdit || source.UserID != op.UserID {
+		r.sendOperationError(source, op.UserID, "forbidden", "canvas edit permission is required to lock objects")
+		return
+	}
+	payload, err := parseLockPayload(op.Payload)
+	if err != nil {
+		r.sendOperationError(source, op.UserID, "bad_request", err.Error())
+		return
+	}
+
+	owner := source.UserID
+	if r.lockRepo != nil {
+		acquired, err := r.lockRepo.TryLock(r.ctx, r.domainRoom.ID(), payload.ObjectID, owner, objectLockTTL)
+		if err != nil {
+			r.sendOperationError(source, owner, "lock_unavailable", "unable to acquire object lock")
+			return
+		}
+		if !acquired {
+			currentOwner, getErr := r.lockRepo.GetLockOwner(r.ctx, r.domainRoom.ID(), payload.ObjectID)
+			if getErr == nil {
+				r.sendMessageToConnection(source, NewLockStateMessage(payload.ObjectID, currentOwner))
+			}
+			r.sendOperationError(source, owner, "object_locked", "object is locked by another user")
+			return
+		}
+	} else {
+		r.domainMu.Lock()
+		err = r.domainRoom.LockObject(payload.ObjectID, owner)
+		r.domainMu.Unlock()
+		if err != nil {
+			r.sendOperationError(source, owner, "object_locked", "object is locked by another user")
+			return
+		}
+	}
+
+	r.publishLockState(payload.ObjectID, &owner)
+}
+
+func (r *Room) processUnlock(op collaboration.Operation, source *Client) {
+	if source == nil || !source.CanEdit || source.UserID != op.UserID {
+		r.sendOperationError(source, op.UserID, "forbidden", "canvas edit permission is required to unlock objects")
+		return
+	}
+	payload, err := parseLockPayload(op.Payload)
+	if err != nil {
+		r.sendOperationError(source, op.UserID, "bad_request", err.Error())
+		return
+	}
+
+	owner := source.UserID
+	if r.lockRepo != nil {
+		currentOwner, err := r.lockRepo.GetLockOwner(r.ctx, r.domainRoom.ID(), payload.ObjectID)
+		if err != nil {
+			r.sendOperationError(source, owner, "lock_unavailable", "unable to validate object lock")
+			return
+		}
+		if currentOwner != nil && *currentOwner != owner {
+			r.sendMessageToConnection(source, NewLockStateMessage(payload.ObjectID, currentOwner))
+			r.sendOperationError(source, owner, "not_lock_owner", "only the lock owner can unlock this object")
+			return
+		}
+		if err := r.lockRepo.Unlock(r.ctx, r.domainRoom.ID(), payload.ObjectID, owner); err != nil {
+			r.sendOperationError(source, owner, "lock_unavailable", "unable to release object lock")
+			return
+		}
+	} else {
+		r.domainMu.Lock()
+		lockedByOwner := r.domainRoom.IsLockedBy(payload.ObjectID, owner)
+		locked := r.domainRoom.IsLocked(payload.ObjectID)
+		if lockedByOwner {
+			r.domainRoom.UnlockObject(payload.ObjectID, owner)
+		}
+		r.domainMu.Unlock()
+		if locked && !lockedByOwner {
+			r.sendOperationError(source, owner, "not_lock_owner", "only the lock owner can unlock this object")
+			return
+		}
+	}
+
+	r.publishLockState(payload.ObjectID, nil)
+}
+
+func (r *Room) processRemoteLockState(op collaboration.Operation) {
+	var payload LockStatePayload
+	if err := json.Unmarshal(op.Payload, &payload); err != nil || strings.TrimSpace(payload.ObjectID) == "" {
+		return
+	}
+	var owner *identity.UserID
+	if payload.Locked && payload.UserID != 0 {
+		id := identity.UserID(payload.UserID)
+		owner = &id
+	}
+	r.domainMu.Lock()
+	r.domainRoom.ApplyLockState(payload.ObjectID, owner)
+	r.domainMu.Unlock()
+	r.broadcastMessage(NewLockStateMessage(payload.ObjectID, owner), nil)
+}
+
+func (r *Room) publishLockState(objectID string, owner *identity.UserID) {
+	r.domainMu.Lock()
+	r.domainRoom.ApplyLockState(objectID, owner)
+	r.domainMu.Unlock()
+	msg := NewLockStateMessage(objectID, owner)
+	r.broadcastMessage(msg, nil)
+	if r.pubsub == nil {
+		return
+	}
+	op := ToOperation(msg, 0)
+	if owner != nil {
+		op.UserID = *owner
+	}
+	op.Timestamp = time.Now().UnixMilli()
+	if err := r.pubsub.Publish(r.domainRoom.ID(), op); err != nil {
+		log.Printf("[room %d] failed to publish lock state: %v", r.domainRoom.ID(), err)
+	}
+}
+
+func (r *Room) broadcastMessage(msg Message, exclude *Client) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	r.broadcastAll(data, exclude, false)
+}
+
+func (r *Room) sendMessageToConnection(client *Client, msg Message) {
+	if client == nil {
+		return
+	}
+	data, err := json.Marshal(msg)
+	if err == nil {
+		client.Send(data)
+	}
+}
+
+func (r *Room) sendOperationError(source *Client, userID identity.UserID, code, message string) {
+	if source != nil {
+		r.sendMessageToConnection(source, NewErrorMessage(code, message))
+		return
+	}
+	r.sendToClient(userID, NewErrorMessage(code, message))
 }
 
 // broadcastText sends a JSON text message to clients.
@@ -269,6 +451,7 @@ func (r *Room) Register(client *Client) {
 	r.setClientPresence(client, nil)
 	client.Start()
 	r.sendInitialSnapshot(client)
+	r.sendInitialLocks(client)
 
 	log.Printf("[room %d] user %d (%s) joined (total: %d)",
 		r.domainRoom.ID(), client.UserID, client.Username, r.MemberCount())
@@ -297,6 +480,16 @@ func (r *Room) sendInitialSnapshot(client *Client) {
 	}
 	for _, frame := range frames {
 		client.SendBinary(frame)
+	}
+}
+
+func (r *Room) sendInitialLocks(client *Client) {
+	r.domainMu.Lock()
+	locks := r.domainRoom.ObjectLocks()
+	r.domainMu.Unlock()
+	for _, lock := range locks {
+		owner := lock.UserID
+		r.sendMessageToConnection(client, NewLockStateMessage(lock.ObjectID, &owner))
 	}
 }
 

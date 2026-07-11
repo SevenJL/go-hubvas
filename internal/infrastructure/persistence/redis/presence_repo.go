@@ -186,9 +186,9 @@ func (r *PresenceRepo) cleanStaleMembers(ctx context.Context, roomID collaborati
 
 func parsePresenceInfo(userID identity.UserID, fields map[string]string) collaboration.PresenceInfo {
 	info := collaboration.PresenceInfo{
-		UserID:    userID,
-		Username:  fields["username"],
-		AvatarURL: fields["avatar_url"],
+		UserID:     userID,
+		Username:   fields["username"],
+		AvatarURL:  fields["avatar_url"],
 		EditingObj: fields["editing_obj"],
 	}
 
@@ -211,11 +211,18 @@ func parsePresenceInfo(userID identity.UserID, fields map[string]string) collabo
 
 // ---- LockRepository implementation ----
 
-// TryLock attempts to acquire a distributed lock via SET NX.
+// TryLock atomically acquires a lock or renews it when the same user already owns it.
 func (r *PresenceRepo) TryLock(ctx context.Context, roomID collaboration.RoomID, objectID string, userID identity.UserID, ttl time.Duration) (bool, error) {
 	key := lockKey(roomID, objectID)
-	ok, err := r.client.SetNX(ctx, key, int64(userID), ttl).Result()
-	return ok, err
+	const script = `
+		local current = redis.call("GET", KEYS[1])
+		if not current or current == ARGV[1] then
+			redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+			return 1
+		end
+		return 0`
+	result, err := r.client.Eval(ctx, script, []string{key}, int64(userID), ttl.Milliseconds()).Int()
+	return result == 1, err
 }
 
 // Unlock releases a distributed lock. Only the lock holder should call this,

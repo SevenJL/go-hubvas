@@ -70,6 +70,7 @@ func main() {
 
 	// ---- Redis (optional — distributed presence) ----
 	var presenceRepo collaboration.PresenceRepository
+	var lockRepo collaboration.LockRepository
 	if cfg.Redis.Addr != "" {
 		redisClient := goredis.NewClient(&goredis.Options{
 			Addr:     cfg.Redis.Addr,
@@ -82,7 +83,8 @@ func main() {
 		} else {
 			rp := infredis.NewPresenceRepo(redisClient)
 			presenceRepo = rp
-			log.Println("Connected to Redis (distributed presence enabled)")
+			lockRepo = rp
+			log.Println("Connected to Redis (distributed presence and object locks enabled)")
 		}
 	} else {
 		log.Println("INFO: Redis not configured — running without distributed presence")
@@ -137,12 +139,15 @@ func main() {
 	}()
 
 	// ---- Hub (in-memory room manager) ----
-	hubOptions := make([]ws.HubOption, 0, 2)
+	hubOptions := make([]ws.HubOption, 0, 3)
 	if pubsub != nil {
 		hubOptions = append(hubOptions, ws.WithPubSub(pubsub))
 	}
 	if presenceRepo != nil {
 		hubOptions = append(hubOptions, ws.WithPresenceRepository(presenceRepo))
+	}
+	if lockRepo != nil {
+		hubOptions = append(hubOptions, ws.WithLockRepository(lockRepo))
 	}
 	hub := ws.NewHub(snapshotRepo, hubOptions...)
 

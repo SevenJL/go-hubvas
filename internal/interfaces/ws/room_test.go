@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -62,7 +63,7 @@ func (s *presenceRepositoryStub) GetOnlineCount(context.Context, collaboration.R
 
 func TestRoomPublishesOnlyLocalOperations(t *testing.T) {
 	pubsub := &operationPubSubStub{}
-	room := NewRoom(7, nil, nil, pubsub, nil)
+	room := NewRoom(7, nil, nil, pubsub, nil, nil)
 	defer room.Shutdown()
 
 	op := collaboration.Operation{Type: collaboration.OpChat, UserID: 42, Payload: []byte(`{"message":"hello"}`)}
@@ -79,7 +80,7 @@ func TestRoomPublishesOnlyLocalOperations(t *testing.T) {
 
 func TestRoomPersistsAuthoritativePresenceAndCursor(t *testing.T) {
 	repo := &presenceRepositoryStub{}
-	room := NewRoom(7, nil, nil, nil, repo)
+	room := NewRoom(7, nil, nil, nil, repo, nil)
 	defer room.Shutdown()
 
 	client := &Client{
@@ -111,7 +112,7 @@ func TestRoomPersistsAuthoritativePresenceAndCursor(t *testing.T) {
 }
 
 func TestRoomKeepsDomainMemberUntilLastLocalConnectionLeaves(t *testing.T) {
-	room := NewRoom(7, nil, nil, nil, nil)
+	room := NewRoom(7, nil, nil, nil, nil, nil)
 	defer room.Shutdown()
 
 	first := &Client{UserID: 42, Username: "alice", send: make(chan []byte, 1)}
@@ -132,7 +133,7 @@ func TestRoomKeepsDomainMemberUntilLastLocalConnectionLeaves(t *testing.T) {
 }
 
 func TestRoomExcludesOnlySendingConnection(t *testing.T) {
-	room := NewRoom(7, nil, nil, nil, nil)
+	room := NewRoom(7, nil, nil, nil, nil, nil)
 	defer room.Shutdown()
 
 	sender := &Client{UserID: 42, send: make(chan []byte, 1)}
@@ -155,5 +156,176 @@ func TestRoomExcludesOnlySendingConnection(t *testing.T) {
 	case <-sameUserOtherTab.send:
 	default:
 		t.Fatal("another connection for the same user must receive the diff")
+	}
+}
+
+type lockRepositoryStub struct {
+	mu     sync.Mutex
+	owners map[string]identity.UserID
+}
+
+func newLockRepositoryStub() *lockRepositoryStub {
+	return &lockRepositoryStub{owners: make(map[string]identity.UserID)}
+}
+
+func (s *lockRepositoryStub) TryLock(_ context.Context, _ collaboration.RoomID, objectID string, userID identity.UserID, _ time.Duration) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner, exists := s.owners[objectID]
+	if exists && owner != userID {
+		return false, nil
+	}
+	s.owners[objectID] = userID
+	return true, nil
+}
+
+func (s *lockRepositoryStub) Unlock(_ context.Context, _ collaboration.RoomID, objectID string, userID identity.UserID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.owners[objectID] == userID {
+		delete(s.owners, objectID)
+	}
+	return nil
+}
+
+func (s *lockRepositoryStub) GetLockOwner(_ context.Context, _ collaboration.RoomID, objectID string) (*identity.UserID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owner, exists := s.owners[objectID]
+	if !exists {
+		return nil, nil
+	}
+	result := owner
+	return &result, nil
+}
+
+func TestRoomLockRequiresEditPermissionAndTrustedIdentity(t *testing.T) {
+	locks := newLockRepositoryStub()
+	room := NewRoom(7, nil, nil, nil, nil, locks)
+	defer room.Shutdown()
+
+	viewer := &Client{UserID: 42, CanEdit: false, send: make(chan []byte, 4)}
+	room.processOpFrom(collaboration.Operation{
+		Type: collaboration.OpLock, UserID: 42, Payload: []byte(`{"object_id":"shape:1"}`),
+	}, true, viewer)
+	if owner, _ := locks.GetLockOwner(context.Background(), 7, "shape:1"); owner != nil {
+		t.Fatal("viewer acquired an object lock")
+	}
+
+	editor := &Client{UserID: 42, CanEdit: true, send: make(chan []byte, 4)}
+	room.processOpFrom(collaboration.Operation{
+		Type: collaboration.OpLock, UserID: 999, Payload: []byte(`{"object_id":"shape:1"}`),
+	}, true, editor)
+	if owner, _ := locks.GetLockOwner(context.Background(), 7, "shape:1"); owner != nil {
+		t.Fatal("operation with a non-authoritative identity acquired an object lock")
+	}
+}
+
+func TestRoomLockConflictAndOwnerOnlyUnlock(t *testing.T) {
+	locks := newLockRepositoryStub()
+	pubsub := &operationPubSubStub{}
+	room := NewRoom(7, nil, nil, pubsub, nil, locks)
+	defer room.Shutdown()
+
+	ownerClient := &Client{UserID: 42, CanEdit: true, send: make(chan []byte, 16)}
+	otherClient := &Client{UserID: 77, CanEdit: true, send: make(chan []byte, 16)}
+	room.clients[ownerClient] = true
+	room.clients[otherClient] = true
+	payload := []byte(`{"object_id":"shape:1"}`)
+
+	room.processOpFrom(collaboration.Operation{Type: collaboration.OpLock, UserID: 42, Payload: payload}, true, ownerClient)
+	owner, _ := locks.GetLockOwner(context.Background(), 7, "shape:1")
+	if owner == nil || *owner != 42 {
+		t.Fatalf("expected user 42 to own lock, got %v", owner)
+	}
+	if got := pubsub.count(); got != 1 {
+		t.Fatalf("expected acquired lock state to publish once, got %d", got)
+	}
+
+	room.processOpFrom(collaboration.Operation{Type: collaboration.OpUnlock, UserID: 77, Payload: payload}, true, otherClient)
+	owner, _ = locks.GetLockOwner(context.Background(), 7, "shape:1")
+	if owner == nil || *owner != 42 {
+		t.Fatal("non-owner released another user's lock")
+	}
+	if got := pubsub.count(); got != 1 {
+		t.Fatalf("rejected unlock must not publish, got %d", got)
+	}
+
+	room.processOpFrom(collaboration.Operation{Type: collaboration.OpUnlock, UserID: 42, Payload: payload}, true, ownerClient)
+	owner, _ = locks.GetLockOwner(context.Background(), 7, "shape:1")
+	if owner != nil {
+		t.Fatal("owner failed to release object lock")
+	}
+	if got := pubsub.count(); got != 2 {
+		t.Fatalf("expected unlock state to publish, got %d", got)
+	}
+}
+
+type linkedPubSub struct {
+	mu           sync.Mutex
+	subscription func(collaboration.Operation)
+	peer         *linkedPubSub
+	published    int
+}
+
+func (s *linkedPubSub) Publish(_ collaboration.RoomID, op collaboration.Operation) error {
+	s.mu.Lock()
+	s.published++
+	peer := s.peer
+	s.mu.Unlock()
+	if peer != nil {
+		peer.mu.Lock()
+		subscriber := peer.subscription
+		peer.mu.Unlock()
+		if subscriber != nil {
+			subscriber(op)
+		}
+	}
+	return nil
+}
+func (s *linkedPubSub) Subscribe(_ collaboration.RoomID, subscriber func(collaboration.Operation)) error {
+	s.mu.Lock()
+	s.subscription = subscriber
+	s.mu.Unlock()
+	return nil
+}
+func (s *linkedPubSub) Unsubscribe(collaboration.RoomID) error { return nil }
+func (s *linkedPubSub) publishCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.published
+}
+
+func TestTwoRoomsExchangeOperationsWithoutRepublishLoop(t *testing.T) {
+	leftBus, rightBus := &linkedPubSub{}, &linkedPubSub{}
+	leftBus.peer, rightBus.peer = rightBus, leftBus
+	left := NewRoom(7, nil, nil, leftBus, nil, nil)
+	right := NewRoom(7, nil, nil, rightBus, nil, nil)
+	defer left.Shutdown()
+	defer right.Shutdown()
+	if err := leftBus.Subscribe(7, left.EnqueueRemote); err != nil {
+		t.Fatal(err)
+	}
+	if err := rightBus.Subscribe(7, right.EnqueueRemote); err != nil {
+		t.Fatal(err)
+	}
+
+	receiver := &Client{UserID: 77, send: make(chan []byte, 4)}
+	right.clients[receiver] = true
+	left.processOp(collaboration.Operation{
+		Type: collaboration.OpChat, UserID: 42, Payload: []byte(`{"content":"hello"}`),
+	}, true)
+
+	select {
+	case data := <-receiver.send:
+		var message Message
+		if err := json.Unmarshal(data, &message); err != nil || message.Type != MsgTypeChat {
+			t.Fatalf("unexpected remote message: %s (%v)", data, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("remote room did not receive published operation")
+	}
+	if leftBus.publishCount() != 1 || rightBus.publishCount() != 0 {
+		t.Fatalf("remote operation was republished: left=%d right=%d", leftBus.publishCount(), rightBus.publishCount())
 	}
 }

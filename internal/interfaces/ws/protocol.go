@@ -22,6 +22,9 @@ const (
 	MsgTypeAwareness = "awareness"
 	MsgTypePresence  = "presence"
 	MsgTypeChat      = "chat"
+	MsgTypeLock      = "lock"
+	MsgTypeUnlock    = "unlock"
+	MsgTypeLockState = "lock_state"
 	MsgTypeAck       = "ack"
 	MsgTypeError     = "error"
 )
@@ -33,9 +36,9 @@ type SyncPayload struct {
 
 // AwarenessPayload is the inner payload for awareness messages.
 type AwarenessPayload struct {
-	Cursor     *CursorData `json:"cursor,omitempty"`
+	Cursor     *CursorData    `json:"cursor,omitempty"`
 	Selection  *SelectionData `json:"selection,omitempty"`
-	EditingObj string      `json:"editing_obj,omitempty"`
+	EditingObj string         `json:"editing_obj,omitempty"`
 }
 
 // CursorData represents cursor coordinates.
@@ -72,6 +75,18 @@ type ChatPayload struct {
 	Content  string `json:"content"`
 }
 
+// LockPayload identifies the canvas object to lock or unlock.
+type LockPayload struct {
+	ObjectID string `json:"object_id"`
+}
+
+// LockStatePayload is the server-authoritative state for one object lock.
+type LockStatePayload struct {
+	ObjectID string `json:"object_id"`
+	UserID   int64  `json:"user_id,string,omitempty"`
+	Locked   bool   `json:"locked"`
+}
+
 // AckPayload is the inner payload for acknowledgement messages.
 type AckPayload struct {
 	Seq int64 `json:"seq"`
@@ -92,6 +107,16 @@ func NewErrorMessage(code, message string) Message {
 		Type:    MsgTypeError,
 		Payload: payload,
 	}
+}
+
+// NewLockStateMessage creates a server-authoritative object lock state message.
+func NewLockStateMessage(objectID string, ownerID *identity.UserID) Message {
+	payload := LockStatePayload{ObjectID: objectID, Locked: ownerID != nil}
+	if ownerID != nil {
+		payload.UserID = int64(*ownerID)
+	}
+	data, _ := json.Marshal(payload)
+	return Message{Type: MsgTypeLockState, Payload: data}
 }
 
 // NewAckMessage creates an ack message envelope.

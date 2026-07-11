@@ -43,14 +43,21 @@ func NewRoom(id RoomID, snapshot []byte) *Room {
 
 // ---- Accessors ----
 
-func (r *Room) ID() RoomID                  { return r.id }
-func (r *Room) Snapshot() []byte             { return r.snapshot }
-func (r *Room) Version() int64               { return r.version }
-func (r *Room) Members() []*RoomMember       { return r.members }
-func (r *Room) Status() RoomStatus           { return r.status }
-func (r *Room) CreatedAt() time.Time         { return r.createdAt }
-func (r *Room) LastActive() time.Time        { return r.lastActive }
-func (r *Room) MemberCount() int             { return len(r.members) }
+func (r *Room) ID() RoomID             { return r.id }
+func (r *Room) Snapshot() []byte       { return r.snapshot }
+func (r *Room) Version() int64         { return r.version }
+func (r *Room) Members() []*RoomMember { return r.members }
+func (r *Room) Status() RoomStatus     { return r.status }
+func (r *Room) CreatedAt() time.Time   { return r.createdAt }
+func (r *Room) LastActive() time.Time  { return r.lastActive }
+func (r *Room) MemberCount() int       { return len(r.members) }
+func (r *Room) ObjectLocks() []LockInfo {
+	locks := make([]LockInfo, 0, len(r.objectLocks))
+	for _, lock := range r.objectLocks {
+		locks = append(locks, lock)
+	}
+	return locks
+}
 
 // ---- Mutations (serialized via the hub goroutine) ----
 
@@ -158,6 +165,15 @@ func (r *Room) IsLocked(objectID string) bool {
 	return exists
 }
 
+// ApplyLockState replaces an object lock from a trusted distributed source.
+func (r *Room) ApplyLockState(objectID string, ownerID *identity.UserID) {
+	if ownerID == nil {
+		delete(r.objectLocks, objectID)
+		return
+	}
+	r.objectLocks[objectID] = LockInfo{ObjectID: objectID, UserID: *ownerID}
+}
+
 // UpdateSnapshot replaces the in-memory snapshot and bumps the version.
 func (r *Room) UpdateSnapshot(data []byte) {
 	r.snapshot = data
@@ -199,34 +215,34 @@ func (r *Room) handleSync(op Operation) (*BroadcastResult, error) {
 	})
 
 	return &BroadcastResult{
-		Target:   BroadcastAll,
+		Target:        BroadcastAll,
 		ExcludeUserID: &op.UserID, // Don't echo back to sender
-		Operation:    op,
+		Operation:     op,
 	}, nil
 }
 
 func (r *Room) handleAwareness(op Operation) (*BroadcastResult, error) {
 	// Awareness messages are relayed to all other members.
 	return &BroadcastResult{
-		Target:   BroadcastAll,
+		Target:        BroadcastAll,
 		ExcludeUserID: &op.UserID,
-		Operation:    op,
+		Operation:     op,
 	}, nil
 }
 
 func (r *Room) handlePresence(op Operation) (*BroadcastResult, error) {
 	// Presence updates go to everyone.
 	return &BroadcastResult{
-		Target:   BroadcastAll,
-		Operation:    op,
+		Target:    BroadcastAll,
+		Operation: op,
 	}, nil
 }
 
 func (r *Room) handleChat(op Operation) (*BroadcastResult, error) {
 	// Chat messages are broadcast to all members including sender.
 	return &BroadcastResult{
-		Target:   BroadcastAll,
-		Operation:    op,
+		Target:    BroadcastAll,
+		Operation: op,
 	}, nil
 }
 
@@ -236,9 +252,9 @@ func (r *Room) handleChat(op Operation) (*BroadcastResult, error) {
 type BroadcastTarget int8
 
 const (
-	BroadcastAll       BroadcastTarget = 0
-	BroadcastOthers    BroadcastTarget = 1
-	BroadcastSingle    BroadcastTarget = 2
+	BroadcastAll    BroadcastTarget = 0
+	BroadcastOthers BroadcastTarget = 1
+	BroadcastSingle BroadcastTarget = 2
 )
 
 // BroadcastResult describes the result of processing an operation.

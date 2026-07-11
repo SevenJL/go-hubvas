@@ -12,17 +12,20 @@ type RoomID = canvas.CanvasID
 type OpType string
 
 const (
-	OpSync      OpType = "sync"      // CRDT document update
-	OpAwareness OpType = "awareness" // Cursor, selection, editing-object
-	OpPresence  OpType = "presence"  // Member join/leave, online list
-	OpChat      OpType = "chat"      // Room chat message
-	OpAck       OpType = "ack"       // Acknowledgement
-	OpError     OpType = "error"     // Error notification
+	OpSync      OpType = "sync"       // CRDT document update
+	OpAwareness OpType = "awareness"  // Cursor, selection, editing-object
+	OpPresence  OpType = "presence"   // Member join/leave, online list
+	OpChat      OpType = "chat"       // Room chat message
+	OpLock      OpType = "lock"       // Acquire or renew an object lock
+	OpUnlock    OpType = "unlock"     // Release an object lock
+	OpLockState OpType = "lock_state" // Server-authoritative object lock state
+	OpAck       OpType = "ack"        // Acknowledgement
+	OpError     OpType = "error"      // Error notification
 )
 
 func (t OpType) IsValid() bool {
 	switch t {
-	case OpSync, OpAwareness, OpPresence, OpChat, OpAck, OpError:
+	case OpSync, OpAwareness, OpPresence, OpChat, OpLock, OpUnlock, OpLockState, OpAck, OpError:
 		return true
 	default:
 		return false
@@ -67,22 +70,22 @@ type Selection struct {
 
 // PresenceInfo is the presence data broadcast for a single member.
 type PresenceInfo struct {
-	UserID      identity.UserID
-	Username    string
-	AvatarURL   string
-	Role        canvas.Role
-	Cursor      *CursorPosition
-	Selection   *Selection
-	EditingObj  string // ID of the object being edited
+	UserID     identity.UserID
+	Username   string
+	AvatarURL  string
+	Role       canvas.Role
+	Cursor     *CursorPosition
+	Selection  *Selection
+	EditingObj string // ID of the object being edited
 }
 
 // Operation is a message flowing through the Room's inbound channel.
 type Operation struct {
 	Type      OpType
 	UserID    identity.UserID
-	Seq       int64               // Client-assigned sequence number for ack
-	Payload   []byte              // Message body (JSON or binary for CRDT updates)
-	Timestamp int64               // Unix millis
+	Seq       int64  // Client-assigned sequence number for ack
+	Payload   []byte // Message body (JSON or binary for CRDT updates)
+	Timestamp int64  // Unix millis
 }
 
 // LockInfo tracks which object is locked by whom.

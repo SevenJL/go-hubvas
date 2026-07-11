@@ -38,6 +38,10 @@ func WithPresenceRepository(repo collaboration.PresenceRepository) HubOption {
 	return func(h *Hub) { h.presenceRepo = repo }
 }
 
+func WithLockRepository(repo collaboration.LockRepository) HubOption {
+	return func(h *Hub) { h.lockRepo = repo }
+}
+
 // Hub is the central registry of all active Rooms.
 // It implements the application/collaboration.RoomManager interface.
 //
@@ -52,6 +56,7 @@ type Hub struct {
 
 	snapshotRepo collaboration.SnapshotRepository
 	presenceRepo collaboration.PresenceRepository
+	lockRepo     collaboration.LockRepository
 	pubsub       OperationPubSub
 
 	// register and unregister channels for clients.
@@ -106,7 +111,7 @@ func (h *Hub) handleRegister(client *Client) {
 	h.mu.Lock()
 	room, exists := h.rooms[client.RoomID]
 	if !exists {
-		room = NewRoom(client.RoomID, h.snapshotRepo, h.loadSnapshot(client.RoomID), h.pubsub, h.presenceRepo)
+		room = NewRoom(client.RoomID, h.snapshotRepo, h.loadSnapshot(client.RoomID), h.pubsub, h.presenceRepo, h.lockRepo)
 		h.rooms[client.RoomID] = room
 		h.subscribeRoom(room)
 		log.Printf("[hub] created room %d", client.RoomID)
@@ -198,7 +203,7 @@ func (h *Hub) GetOrCreate(roomID collaboration.RoomID) *collaboration.Room {
 		return r.DomainRoom()
 	}
 
-	room := NewRoom(roomID, h.snapshotRepo, h.loadSnapshot(roomID), h.pubsub, h.presenceRepo)
+	room := NewRoom(roomID, h.snapshotRepo, h.loadSnapshot(roomID), h.pubsub, h.presenceRepo, h.lockRepo)
 	h.rooms[roomID] = room
 	h.subscribeRoom(room)
 	log.Printf("[hub] created room %d", roomID)

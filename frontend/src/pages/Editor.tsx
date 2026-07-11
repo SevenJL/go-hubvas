@@ -64,6 +64,7 @@ export function Editor() {
   const [showMembers, setShowMembers] = useState(false);
   const [editorInstance, setEditorInstance] = useState<TldrawEditor | null>(null);
   const [viewportRevision, setViewportRevision] = useState(0);
+  const [lockNotice, setLockNotice] = useState('');
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -80,12 +81,33 @@ export function Editor() {
 
   // ---- WebSocket (awareness + real-time sync for editors) ----
   const token = getAccessToken() || '';
-  const { doc, connected, awareness, onlineUsers, sendAwareness } = useYjsProvider({
+  const {
+    doc, connected, awareness, onlineUsers, locks,
+    sendAwareness, lockObject, unlockObject,
+  } = useYjsProvider({
     canvasId, token,
     username: user?.username || 'Anonymous',
     userId: user?.id || '0',
     canEdit,
   });
+
+  const locksRef = useRef(locks);
+  const lockObjectRef = useRef(lockObject);
+  const unlockObjectRef = useRef(unlockObject);
+  useEffect(() => { locksRef.current = locks; }, [locks]);
+  useEffect(() => { lockObjectRef.current = lockObject; }, [lockObject]);
+  useEffect(() => { unlockObjectRef.current = unlockObject; }, [unlockObject]);
+
+  useEffect(() => {
+    if (!editorInstance || !user) return;
+    const selectedByOther = editorInstance.getSelectedShapeIds().some(
+      shapeId => {
+        const owner = locks.get(shapeId);
+        return owner !== undefined && owner !== String(user.id);
+      },
+    );
+    if (selectedByOther) editorInstance.selectNone();
+  }, [editorInstance, locks, user]);
 
   // ---- tldraw/Yjs collaboration + durable HTTP snapshots ----
   const { onMount: onTldrawMount } = useTldrawSync({ canvasId, doc, canEdit });
@@ -126,6 +148,38 @@ export function Editor() {
 
       let viewportFrame: number | undefined;
       let pointerInside = false;
+      const activeObjectLocks = new Set<string>();
+      const currentUserId = String(user?.id || '0');
+
+      const syncSelectionLocks = () => {
+        if (!canEdit) return;
+        const selected = new Set<string>(editor.getSelectedShapeIds());
+        const blocked = Array.from(selected).find(shapeId => {
+          const owner = locksRef.current.get(shapeId);
+          return owner !== undefined && owner !== currentUserId;
+        });
+        if (blocked) {
+          setLockNotice('该图形正在被其他协作者编辑');
+          editor.selectNone();
+          selected.clear();
+        }
+        for (const objectId of activeObjectLocks) {
+          if (!selected.has(objectId)) {
+            unlockObjectRef.current(objectId);
+            activeObjectLocks.delete(objectId);
+          }
+        }
+        for (const objectId of selected) {
+          if (!activeObjectLocks.has(objectId)) {
+            lockObjectRef.current(objectId);
+            activeObjectLocks.add(objectId);
+          }
+        }
+      };
+      const unlistenSelection = editor.store.listen(syncSelectionLocks, { scope: 'session' });
+      const lockRenewTimer = window.setInterval(() => {
+        for (const objectId of activeObjectLocks) lockObjectRef.current(objectId);
+      }, 5000);
       const unlistenViewport = editor.store.listen(({ changes }) => {
         const changedIds = [
           ...Object.keys(changes.added),
@@ -154,6 +208,17 @@ export function Editor() {
       // Pointer tracking for awareness (editors only).
       if (canEdit) {
         const container = editor.getContainer();
+        const onPointerDown = (event: PointerEvent) => {
+          const point = editor.screenToPage({ x: event.clientX, y: event.clientY });
+          const shape = editor.getShapeAtPoint(point);
+          if (!shape) return;
+          const owner = locksRef.current.get(shape.id);
+          if (owner === undefined || owner === currentUserId) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          editor.selectNone();
+          setLockNotice('该图形正在被其他协作者编辑');
+        };
         const onPointerMove = (event: PointerEvent) => {
           pointerInside = true;
           const pagePoint = editor.screenToPage({ x: event.clientX, y: event.clientY });
@@ -163,12 +228,17 @@ export function Editor() {
           pointerInside = false;
           handleCursorMove(null);
         };
+        container.addEventListener('pointerdown', onPointerDown, true);
         container.addEventListener('pointermove', onPointerMove);
         container.addEventListener('pointerleave', onPointerLeave);
         const origDispose = editor.dispose.bind(editor);
         editor.dispose = () => {
+          container.removeEventListener('pointerdown', onPointerDown, true);
           container.removeEventListener('pointermove', onPointerMove);
           container.removeEventListener('pointerleave', onPointerLeave);
+          for (const objectId of activeObjectLocks) unlockObjectRef.current(objectId);
+          window.clearInterval(lockRenewTimer);
+          unlistenSelection();
           unlistenViewport();
           if (viewportFrame !== undefined) cancelAnimationFrame(viewportFrame);
           setEditorInstance(null);
@@ -177,6 +247,8 @@ export function Editor() {
       } else {
         const origDispose = editor.dispose.bind(editor);
         editor.dispose = () => {
+          window.clearInterval(lockRenewTimer);
+          unlistenSelection();
           unlistenViewport();
           if (viewportFrame !== undefined) cancelAnimationFrame(viewportFrame);
           setEditorInstance(null);
@@ -184,7 +256,7 @@ export function Editor() {
         };
       }
     },
-    [onTldrawMount, handleCursorMove, canEdit],
+    [onTldrawMount, handleCursorMove, canEdit, user?.id],
   );
 
   if (!canvas) {
@@ -237,6 +309,15 @@ export function Editor() {
 
         {/* tldraw canvas */}
         <div className="flex-1 relative" ref={containerRef}>
+          {lockNotice && (
+            <button
+              type="button"
+              onClick={() => setLockNotice('')}
+              className="absolute top-3 left-1/2 -translate-x-1/2 z-[1100] rounded-full bg-amber-950/90 px-4 py-2 text-xs font-medium text-white shadow-lg"
+            >
+              {lockNotice}
+            </button>
+          )}
           <Tldraw key={canvasId} onMount={handleMount} components={tldrawComponents} />
           <RemoteCursors cursors={awareness} editor={editorInstance} viewportRevision={viewportRevision} />
         </div>
