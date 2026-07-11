@@ -147,8 +147,9 @@ func (r *CommunityRepo) searchPublished(ctx context.Context, query communityDoma
 		argIdx++
 	}
 
-	// Tag filter — requires JOIN or subquery
-	tagJoin := ""
+	// Tag filtering uses EXISTS instead of a JOIN so each published canvas
+	// appears at most once. This also removes the need for SELECT DISTINCT,
+	// allowing computed expressions such as the trending score in ORDER BY.
 	if len(query.Tags) > 0 {
 		placeholders := make([]string, len(query.Tags))
 		for i, tag := range query.Tags {
@@ -156,10 +157,10 @@ func (r *CommunityRepo) searchPublished(ctx context.Context, query communityDoma
 			args = append(args, tag)
 			argIdx++
 		}
-		tagJoin = fmt.Sprintf(
-			" JOIN canvas_tags ct ON ct.canvas_id = pc.canvas_id AND ct.tag IN (%s)",
+		whereClauses = append(whereClauses, fmt.Sprintf(
+			"EXISTS (SELECT 1 FROM canvas_tags ct WHERE ct.canvas_id = pc.canvas_id AND ct.tag IN (%s))",
 			strings.Join(placeholders, ","),
-		)
+		))
 	}
 
 	whereSQL := ""
@@ -169,8 +170,8 @@ func (r *CommunityRepo) searchPublished(ctx context.Context, query communityDoma
 
 	// Count query
 	countSQL := fmt.Sprintf(
-		"SELECT COUNT(DISTINCT pc.canvas_id) FROM published_canvases pc%s %s",
-		tagJoin, whereSQL,
+		"SELECT COUNT(*) FROM published_canvases pc %s",
+		whereSQL,
 	)
 	var total int64
 	if err := r.pool.QueryRow(ctx, countSQL, args...).Scan(&total); err != nil {
@@ -200,14 +201,7 @@ func (r *CommunityRepo) searchPublished(ctx context.Context, query communityDoma
 		offset = 0
 	}
 
-	dataSQL := fmt.Sprintf(
-		`SELECT DISTINCT pc.canvas_id, pc.author_id, pc.title, pc.snapshot_url,
-		        pc.like_count, pc.comment_count, pc.fork_count, pc.published_at
-		 FROM published_canvases pc%s %s
-		 ORDER BY %s
-		 LIMIT $%d OFFSET $%d`,
-		tagJoin, whereSQL, orderBy, argIdx, argIdx+1,
-	)
+	dataSQL := buildPublishedDataSQL(whereSQL, orderBy, argIdx)
 	args = append(args, limit, offset)
 
 	rows, err := r.pool.Query(ctx, dataSQL, args...)
@@ -242,6 +236,17 @@ func (r *CommunityRepo) searchPublished(ctx context.Context, query communityDoma
 	}
 
 	return results, total, nil
+}
+
+func buildPublishedDataSQL(whereSQL, orderBy string, argIdx int) string {
+	return fmt.Sprintf(
+		`SELECT pc.canvas_id, pc.author_id, pc.title, pc.snapshot_url,
+		        pc.like_count, pc.comment_count, pc.fork_count, pc.published_at
+		 FROM published_canvases pc %s
+		 ORDER BY %s, pc.canvas_id DESC
+		 LIMIT $%d OFFSET $%d`,
+		whereSQL, orderBy, argIdx, argIdx+1,
+	)
 }
 
 // ---- Like ----
