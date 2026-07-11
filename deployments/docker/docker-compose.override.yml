@@ -1,0 +1,50 @@
+# Dev-only overrides.
+#
+# 1. Build images from source (production pulls prebuilt images from GHCR).
+# 2. Re-expose infrastructure/server ports to the host so local tools
+#    (psql, redis-cli, native `go run` dev servers, MinIO console, etc.)
+#    can reach the services.
+#
+# Loading rules:
+#   - `docker compose up` from THIS directory auto-loads this file.
+#   - `make docker-up` / `make docker-down` load it explicitly (with --build).
+#   - CI uses `-f docker-compose.yaml` only, so this file is NOT applied
+#     in production — it pulls prebuilt images and keeps ports internal.
+
+services:
+  api-server:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.api
+    ports:
+      - "8080:8080"
+
+  ws-server:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.ws
+    ports:
+      - "8081:8081"
+
+  web:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.web
+
+  postgres:
+    ports:
+      - "5432:5432"
+
+  redis:
+    ports:
+      - "6379:6379"
+
+  nats:
+    ports:
+      - "4222:4222"
+      - "8222:8222" # monitoring
+
+  minio:
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # Web console

@@ -1,0 +1,17 @@
+# Build artifacts & dependencies (kept out of Docker context)
+**/node_modules
+**/dist
+bin/
+*.exe
+*.test
+*.out
+
+# VCS & editors
+.git
+.gitignore
+.vscode
+.idea
+
+# Local env / secrets
+.env
+.env.*

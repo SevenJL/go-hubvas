@@ -1,0 +1,240 @@
+name: CI / Deploy
+
+# Build images on GitHub runners, push to GHCR, then the server just pulls.
+# This keeps the SSH command short (pull + up, ~30s) and avoids the
+# timeout/output-buffering problems of building on the server.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write   # push images to GHCR
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GO_VERSION: "1.25"
+  NODE_VERSION: "20"
+  WEB_HOST_PORT: "6161"
+  # GHCR requires lowercase paths. Owner SevenJL -> sevenjl.
+  IMAGE_PREFIX: ghcr.io/sevenjl/go-hubvas
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1. Lint & test (every push / PR).
+  # ---------------------------------------------------------------------------
+  test:
+    name: Lint & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - run: go mod download
+      - run: go vet ./...
+      - run: |
+          go build ./cmd/api-server
+          go build ./cmd/ws-server
+      - run: go test -race -count=1 ./...
+
+      - name: Frontend — install
+        working-directory: frontend
+        run: npm ci
+
+      - name: Frontend — build
+        working-directory: frontend
+        run: npm run build
+
+  # ---------------------------------------------------------------------------
+  # 2. Build & push images to GHCR (main only). Three images in parallel.
+  # ---------------------------------------------------------------------------
+  build-and-push:
+    name: Build & Push ${{ matrix.service }}
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { service: api, dockerfile: deployments/docker/Dockerfile.api }
+          - { service: ws,  dockerfile: deployments/docker/Dockerfile.ws  }
+          - { service: web, dockerfile: deployments/docker/Dockerfile.web }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:latest
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ---------------------------------------------------------------------------
+  # 3. Deploy (main only). Pull fresh images on the server and restart.
+  #    Requires GitHub secrets: DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY.
+  #    Optional: DEPLOY_PORT (default 22), DEPLOY_PROJECT_DIR (default ~/go-hubvas).
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy to Server
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate deploy secrets
+        run: |
+          missing=()
+          [ -z "${{ secrets.DEPLOY_HOST }}" ]     && missing+=("DEPLOY_HOST")
+          [ -z "${{ secrets.DEPLOY_USER }}" ]     && missing+=("DEPLOY_USER")
+          [ -z "${{ secrets.DEPLOY_SSH_KEY }}" ]  && missing+=("DEPLOY_SSH_KEY")
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required secrets: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Trust the server's host key so ssh won't prompt interactively.
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Run deploy on server
+        env:
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          SSH_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          GITHUB_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+          WEB_HOST_PORT: ${{ env.WEB_HOST_PORT }}
+          PROJECT_DIR: ${{ secrets.DEPLOY_PROJECT_DIR }}
+        run: |
+          # Plain `ssh` (not drone-ssh) streams stdout/stderr in real time,
+          # so every step's output and any error message appear in full.
+          # Vars before `bash -s` become the remote script's environment;
+          # the quoted heredoc is sent to the remote bash untouched.
+          ssh -i ~/.ssh/deploy_key -p "$SSH_PORT" \
+              -o StrictHostKeyChecking=accept-new \
+              "$SSH_USER@$SSH_HOST" \
+              GITHUB_TOKEN="$GITHUB_TOKEN" GHCR_USER="$GHCR_USER" \
+              REPO="$REPO" BRANCH="$BRANCH" \
+              WEB_HOST_PORT="$WEB_HOST_PORT" PROJECT_DIR="$PROJECT_DIR" \
+              bash -s <<'DEPLOY_SCRIPT'
+          set -uo pipefail
+          fail() { echo "❌ ERROR: $*"; exit 1; }
+          step() { echo "==> $*"; }
+
+          PROJECT_DIR="${PROJECT_DIR:-$HOME/go-hubvas}"
+          COMPOSE_FILE="$PROJECT_DIR/deployments/docker/docker-compose.yaml"
+          export WEB_HOST_PORT="${WEB_HOST_PORT:-6161}"
+          BRANCH="${BRANCH:-main}"
+
+          step "Project: $PROJECT_DIR | web port: $WEB_HOST_PORT | ${REPO}:${BRANCH}"
+          step "whoami: $(whoami) @ $(hostname)"
+
+          # ---- 1. tools ----
+          step "Checking tools..."
+          if command -v git >/dev/null 2>&1; then
+            echo "    git: $(git --version)"
+          else
+            fail "git not installed — run: sudo apt-get install -y git"
+          fi
+          if command -v docker >/dev/null 2>&1; then
+            echo "    docker: $(docker --version)"
+          else
+            fail "docker not installed — see https://docs.docker.com/engine/install/"
+          fi
+          if docker compose version >/dev/null 2>&1; then
+            echo "    compose: $(docker compose version)"
+          else
+            fail "docker compose plugin missing"
+          fi
+
+          # ---- 2. repo (compose file + migrations) ----
+          if [ -n "${GITHUB_TOKEN:-}" ]; then
+            CLONE_URL="https://x-access-token:${GITHUB_TOKEN}@github.com/${REPO}.git"
+          else
+            CLONE_URL="https://github.com/${REPO}.git"
+          fi
+          if [ ! -d "$PROJECT_DIR/.git" ]; then
+            step "Cloning ${REPO} (${BRANCH})..."
+            git clone --branch "$BRANCH" "$CLONE_URL" "$PROJECT_DIR" || fail "git clone failed"
+          else
+            step "Pulling latest code..."
+            git -C "$PROJECT_DIR" remote set-url origin "$CLONE_URL" || true
+            git -C "$PROJECT_DIR" fetch --prune origin "$BRANCH" || fail "git fetch failed"
+            git -C "$PROJECT_DIR" reset --hard "origin/${BRANCH}" || fail "git reset failed"
+          fi
+
+          # ---- 3. login to GHCR (ephemeral token, logged out after) ----
+          step "Logging into GHCR..."
+          echo "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GHCR_USER}" --password-stdin \
+            || fail "docker login to ghcr.io failed"
+
+          # ---- 4. pull fresh images + restart ----
+          step "Pulling images..."
+          docker compose -f "$COMPOSE_FILE" pull || fail "docker compose pull failed"
+
+          step "Starting services..."
+          docker compose -f "$COMPOSE_FILE" up -d --remove-orphans || fail "docker compose up failed"
+
+          docker logout ghcr.io >/dev/null 2>&1 || true
+
+          # ---- 5. health ----
+          step "Waiting for health on :${WEB_HOST_PORT} (/health → api-server)"
+          healthy=0
+          for i in $(seq 1 30); do
+            if curl -fsS "http://127.0.0.1:${WEB_HOST_PORT}/health" >/dev/null 2>&1; then
+              echo "    healthy (attempt $i)"
+              healthy=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$healthy" -ne 1 ]; then
+            echo "❌ Stack did not become healthy — dumping logs:"
+            docker compose -f "$COMPOSE_FILE" logs --tail=100 web api-server ws-server || true
+            exit 1
+          fi
+
+          step "Deployment successful 🎉"
+          docker compose -f "$COMPOSE_FILE" ps || true
+          DEPLOY_SCRIPT
