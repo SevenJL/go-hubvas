@@ -200,10 +200,12 @@ export function Editor() {
         }
       }, { scope: 'session' });
 
-      // Read-only mode: lock editing + hide UI.
+      // Read-only mode: lock editing and start in the hand tool so viewers
+      // can only navigate the canvas instead of selecting drawing objects.
       if (!canEdit) {
         editor.updateInstanceState({ isReadonly: true });
-        editor.setCurrentTool('select');
+        editor.selectNone();
+        editor.setCurrentTool('hand');
       }
 
       // Pointer tracking for awareness (editors only).
