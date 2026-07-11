@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { Users, Wifi, WifiOff } from 'lucide-react';
 import type { PresenceMember } from '../../types';
+import { useI18n } from '../../i18n';
 
 interface OnlineUsersProps {
   users: PresenceMember[];
@@ -23,6 +24,7 @@ function userColor(userId: string): string {
 
 export function OnlineUsers({ users, connected, currentUsername }: OnlineUsersProps) {
   const [open, setOpen] = useState(false);
+  const { t } = useI18n();
   const ref = useRef<HTMLDivElement>(null);
 
   // Close on outside click.
@@ -43,7 +45,7 @@ export function OnlineUsers({ users, connected, currentUsername }: OnlineUsersPr
       <button
         onClick={() => setOpen(!open)}
         className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-900 transition-colors px-2 py-1 rounded-md hover:bg-gray-100"
-        title={`${total} online`}
+        title={t('{count} online', { count: total })}
       >
         {connected ? (
           <Wifi size={12} className="text-green-500" />
@@ -60,7 +62,7 @@ export function OnlineUsers({ users, connected, currentUsername }: OnlineUsersPr
           {/* Header */}
           <div className="px-3 py-2 border-b border-gray-100">
             <span className="text-xs font-medium text-gray-500">
-              {total} user{total !== 1 ? 's' : ''} online
+              {t('{count} users online', { count: total })}
             </span>
           </div>
 
@@ -74,8 +76,8 @@ export function OnlineUsers({ users, connected, currentUsername }: OnlineUsersPr
               >
                 {(currentUsername || 'Y')[0]?.toUpperCase()}
               </div>
-              <span className="text-sm text-gray-900 truncate">{currentUsername || 'You'}</span>
-              <span className="ml-auto text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">you</span>
+              <span className="text-sm text-gray-900 truncate">{currentUsername || t('You')}</span>
+              <span className="ml-auto text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded-full">{t('you')}</span>
             </div>
 
             {/* Divider if there are others */}
@@ -92,8 +94,8 @@ export function OnlineUsers({ users, connected, currentUsername }: OnlineUsersPr
                 >
                   {(u.username || '?')[0]?.toUpperCase()}
                 </div>
-                <span className="text-sm text-gray-700 truncate">{u.username || 'Anonymous'}</span>
-                <span className="ml-auto text-[10px] text-gray-400 capitalize">{u.role || 'viewer'}</span>
+                <span className="text-sm text-gray-700 truncate">{u.username || t('Anonymous')}</span>
+                <span className="ml-auto text-[10px] text-gray-400 capitalize">{t(u.role || 'viewer')}</span>
               </div>
             ))}
           </div>

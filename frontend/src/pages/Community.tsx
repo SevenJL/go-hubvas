@@ -5,6 +5,7 @@ import { communityService } from '../services/community';
 import type { PublishedCanvas } from '../types';
 import { Heart, MessageCircle, GitFork, Search, TrendingUp, Clock } from 'lucide-react';
 import { Button, CanvasGridSkeleton, ErrorState } from '../components/ui';
+import { useI18n } from '../i18n';
 
 export function Community() {
   const [items, setItems] = useState<PublishedCanvas[]>([]);
@@ -16,6 +17,7 @@ export function Community() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const navigate = useNavigate();
+  const { t } = useI18n();
 
   const load = useCallback(async (p = 1) => {
     setLoading(true);
@@ -26,11 +28,11 @@ export function Community() {
       setTotal(res.total_count);
       setPage(p);
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'The community feed is temporarily unavailable.');
+      setLoadError(err instanceof Error ? err.message : t('The community feed is temporarily unavailable.'));
     } finally {
       setLoading(false);
     }
-  }, [sortBy, query]);
+  }, [sortBy, query, t]);
 
   useEffect(() => { void load(1); }, [load]);
 
@@ -44,7 +46,7 @@ export function Community() {
   return (
     <Layout>
       <div className="max-w-5xl mx-auto px-4 py-8">
-        <h1 className="text-2xl font-bold text-gray-900 mb-6">Community</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">{t('Community')}</h1>
 
         {/* Search & sort */}
         <div className="flex flex-col sm:flex-row gap-3 mb-6">
@@ -54,12 +56,12 @@ export function Community() {
               <input
                 type="text"
                 className="input-field pl-9"
-                placeholder="Search canvases..."
+                placeholder={t('Search canvases...')}
                 value={keyword}
                 onChange={e => setKeyword(e.target.value)}
               />
             </div>
-            <Button type="submit">Search</Button>
+            <Button type="submit">{t('Search')}</Button>
           </form>
 
           <div className="flex gap-1">
@@ -69,7 +71,7 @@ export function Community() {
                 sortBy === 'latest' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'
               }`}
             >
-              <Clock size={14} /> Latest
+              <Clock size={14} /> {t('Latest')}
             </button>
             <button
               onClick={() => setSortBy('popular')}
@@ -77,7 +79,7 @@ export function Community() {
                 sortBy === 'popular' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'
               }`}
             >
-              <Heart size={14} /> Popular
+              <Heart size={14} /> {t('Popular')}
             </button>
             <button
               onClick={() => setSortBy('trending')}
@@ -85,7 +87,7 @@ export function Community() {
                 sortBy === 'trending' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'
               }`}
             >
-              <TrendingUp size={14} /> Trending
+              <TrendingUp size={14} /> {t('Trending')}
             </button>
           </div>
         </div>
@@ -93,9 +95,9 @@ export function Community() {
         {loading ? (
           <CanvasGridSkeleton />
         ) : loadError ? (
-          <ErrorState title="Could not load the community" message={loadError} onRetry={() => void load(page)} />
+          <ErrorState title={t('Could not load the community')} message={loadError} onRetry={() => void load(page)} />
         ) : items.length === 0 ? (
-          <div className="text-center py-12 card text-gray-400">No published canvases yet</div>
+          <div className="text-center py-12 card text-gray-400">{t('No published canvases yet')}</div>
         ) : (
           <>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -107,7 +109,7 @@ export function Community() {
                   </div>
                   <div className="p-4">
                     <h3 className="font-semibold text-gray-900 truncate">{c.title}</h3>
-                    <p className="text-xs text-gray-500 mt-0.5">by {c.author_name || `User #${c.author_id}`}</p>
+                    <p className="text-xs text-gray-500 mt-0.5">{t('by {author}', { author: c.author_name || t('User #{id}', { id: c.author_id }) })}</p>
                     <div className="flex items-center gap-4 mt-3 text-sm text-gray-500">
                       <span className="flex items-center gap-1">
                         <Heart size={14} className="text-red-400" /> {c.like_count}
@@ -132,15 +134,15 @@ export function Community() {
                   onClick={() => void load(page - 1)}
                   disabled={page <= 1}
                 >
-                  Previous
+                  {t('Previous')}
                 </Button>
-                <span className="text-sm text-gray-500">Page {page} of {totalPages}</span>
+                <span className="text-sm text-gray-500">{t('Page {page} of {total}', { page, total: totalPages })}</span>
                 <Button
                   variant="secondary"
                   onClick={() => void load(page + 1)}
                   disabled={page >= totalPages}
                 >
-                  Next
+                  {t('Next')}
                 </Button>
               </div>
             )}

@@ -3,6 +3,7 @@ import { Heart, MessageCircle, GitFork } from 'lucide-react';
 import { CanvasThumbnail } from '../canvas/CanvasThumbnail';
 import { Card } from '../ui/Card';
 import type { PublishedCanvas } from '../../types';
+import { useI18n } from '../../i18n';
 
 interface FeedCardProps {
   item: PublishedCanvas;
@@ -10,6 +11,7 @@ interface FeedCardProps {
 
 export function FeedCard({ item }: FeedCardProps) {
   const navigate = useNavigate();
+  const { t } = useI18n();
 
   return (
     <Card hover className="overflow-hidden" onClick={() => navigate(`/canvas/${item.canvas_id}`)}>
@@ -17,7 +19,7 @@ export function FeedCard({ item }: FeedCardProps) {
       <div className="p-4">
         <h3 className="font-semibold text-gray-900 truncate">{item.title}</h3>
         <p className="text-xs text-gray-500 mt-0.5">
-          by {item.author_name || `User #${item.author_id}`}
+          {t('by {author}', { author: item.author_name || t('User #{id}', { id: item.author_id }) })}
         </p>
 
         {item.tags && item.tags.length > 0 && (

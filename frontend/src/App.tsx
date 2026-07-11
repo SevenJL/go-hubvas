@@ -8,10 +8,12 @@ import { Community } from './pages/Community';
 import { CanvasDetail } from './pages/CanvasDetail';
 import { Profile } from './pages/Profile';
 import { PageLoader, ToastProvider } from './components/ui';
+import { I18nProvider, useI18n } from './i18n';
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
-  if (loading) return <PageLoader label="Restoring your session..." />;
+  const { t } = useI18n();
+  if (loading) return <PageLoader label={t('Restoring your session...')} />;
   if (!user) return <Navigate to="/login" replace />;
   return <>{children}</>;
 }
@@ -56,11 +58,13 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
-      <ToastProvider>
-        <AuthProvider>
-          <AppRoutes />
-        </AuthProvider>
-      </ToastProvider>
+      <I18nProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <AppRoutes />
+          </AuthProvider>
+        </ToastProvider>
+      </I18nProvider>
     </BrowserRouter>
   );
 }

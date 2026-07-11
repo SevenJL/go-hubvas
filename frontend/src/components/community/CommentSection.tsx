@@ -3,6 +3,7 @@ import { Send } from 'lucide-react';
 import { Avatar } from '../ui/Avatar';
 import { Button } from '../ui/Button';
 import type { CommentInfo } from '../../types';
+import { useI18n } from '../../i18n';
 
 interface CommentSectionProps {
   comments: CommentInfo[];
@@ -12,6 +13,7 @@ interface CommentSectionProps {
 
 export function CommentSection({ comments, isLoggedIn, onSubmit }: CommentSectionProps) {
   const [newComment, setNewComment] = useState('');
+  const { language, t } = useI18n();
   const [submitting, setSubmitting] = useState(false);
 
   const handleSubmit = async (e: FormEvent) => {
@@ -31,7 +33,7 @@ export function CommentSection({ comments, isLoggedIn, onSubmit }: CommentSectio
 
   return (
     <div className="mt-4">
-      <h3 className="font-semibold text-gray-900 mb-3">Comments ({comments.length})</h3>
+      <h3 className="font-semibold text-gray-900 mb-3">{t('Comments ({count})', { count: comments.length })}</h3>
 
       {isLoggedIn && (
         <form onSubmit={handleSubmit} className="flex gap-2 mb-4">
@@ -40,7 +42,7 @@ export function CommentSection({ comments, isLoggedIn, onSubmit }: CommentSectio
             className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm
                        placeholder:text-gray-400 focus:outline-none focus:ring-2
                        focus:ring-indigo-500 focus:border-transparent"
-            placeholder="Write a comment..."
+            placeholder={t('Write a comment...')}
             value={newComment}
             onChange={e => setNewComment(e.target.value)}
             maxLength={5000}
@@ -52,19 +54,19 @@ export function CommentSection({ comments, isLoggedIn, onSubmit }: CommentSectio
       )}
 
       {comments.length === 0 ? (
-        <p className="text-sm text-gray-400">No comments yet.</p>
+        <p className="text-sm text-gray-400">{t('No comments yet.')}</p>
       ) : (
         <div className="space-y-3 max-h-96 overflow-y-auto">
           {comments.map(c => (
             <div key={c.id} className="flex gap-3">
-              <Avatar name={c.author_name || `User #${c.author_id}`} size="sm" />
+              <Avatar name={c.author_name || t('User #{id}', { id: c.author_id })} size="sm" />
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium text-gray-900">
-                    {c.author_name || `User #${c.author_id}`}
+                    {c.author_name || t('User #{id}', { id: c.author_id })}
                   </span>
                   <span className="text-xs text-gray-400">
-                    {new Date(c.created_at * 1000).toLocaleDateString()}
+                    {new Date(c.created_at * 1000).toLocaleDateString(language === 'zh' ? 'zh-CN' : 'en-US')}
                   </span>
                 </div>
                 <p className="text-sm text-gray-600 mt-0.5 break-words">{c.content}</p>

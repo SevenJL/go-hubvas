@@ -14,6 +14,7 @@ import { MemberManager } from '../components/canvas/MemberManager';
 import type { CanvasInfo } from '../types';
 import { ArrowLeft, Globe, EyeOff, UserPlus } from 'lucide-react';
 import { ErrorState, InlineLoader } from '../components/ui';
+import { useI18n } from '../i18n';
 
 function RemoteCursors({
   cursors,
@@ -59,6 +60,7 @@ export function Editor() {
   const { id } = useParams<{ id: string }>();
   const canvasId = id!;
   const { user } = useAuth();
+  const { language, t } = useI18n();
   const [canvas, setCanvas] = useState<CanvasInfo | null>(null);
   const [loadError, setLoadError] = useState('');
   const [publishing, setPublishing] = useState(false);
@@ -87,7 +89,7 @@ export function Editor() {
     sendAwareness, lockObject, unlockObject,
   } = useYjsProvider({
     canvasId, token,
-    username: user?.username || 'Anonymous',
+    username: user?.username || t('Anonymous'),
     userId: user?.id || '0',
     canEdit,
   });
@@ -131,7 +133,7 @@ export function Editor() {
     if (!canvas || publishing) return;
     setPublishing(true);
     try { await canvasService.publish(canvas.id); setCanvas({ ...canvas, visibility: 'published' }); }
-    catch (err) { setLoadError(err instanceof Error ? err.message : 'Publish failed'); }
+    catch (err) { setLoadError(err instanceof Error ? err.message : t('Publish failed')); }
     finally { setPublishing(false); }
   };
 
@@ -160,7 +162,7 @@ export function Editor() {
           return owner !== undefined && owner !== currentUserId;
         });
         if (blocked) {
-          setLockNotice('该图形正在被其他协作者编辑');
+          setLockNotice(t('This shape is being edited by another collaborator'));
           editor.selectNone();
           selected.clear();
         }
@@ -220,7 +222,7 @@ export function Editor() {
           event.preventDefault();
           event.stopImmediatePropagation();
           editor.selectNone();
-          setLockNotice('该图形正在被其他协作者编辑');
+          setLockNotice(t('This shape is being edited by another collaborator'));
         };
         const onPointerMove = (event: PointerEvent) => {
           pointerInside = true;
@@ -259,7 +261,7 @@ export function Editor() {
         };
       }
     },
-    [onTldrawMount, handleCursorMove, canEdit, user?.id],
+    [onTldrawMount, handleCursorMove, canEdit, user?.id, t],
   );
 
   if (!canvas) {
@@ -267,8 +269,8 @@ export function Editor() {
       <Layout>
         <div className="mx-auto max-w-5xl px-4 py-8">
           {loadError
-            ? <ErrorState title="Canvas unavailable" message={loadError} onRetry={() => window.location.reload()} />
-            : <div className="rounded-2xl border border-slate-200 bg-white"><div className="skeleton h-[55vh] rounded-t-2xl" /><InlineLoader label="Loading collaborative canvas..." /></div>}
+            ? <ErrorState title={t('Canvas unavailable')} message={loadError} onRetry={() => window.location.reload()} />
+            : <div className="rounded-2xl border border-slate-200 bg-white"><div className="skeleton h-[55vh] rounded-t-2xl" /><InlineLoader label={t('Loading collaborative canvas...')} /></div>}
         </div>
       </Layout>
     );
@@ -280,7 +282,7 @@ export function Editor() {
         {/* Toolbar */}
         <div className="h-11 bg-white border-b border-gray-200 flex items-center justify-between px-4 z-50 shrink-0">
           <div className="flex items-center gap-3">
-            <Link to="/dashboard" className="text-gray-400 hover:text-gray-600 transition-colors" title="Back to dashboard">
+            <Link to="/dashboard" className="text-gray-400 hover:text-gray-600 transition-colors" title={t('Back to dashboard')}>
               <ArrowLeft size={20} />
             </Link>
             <h2 className="font-semibold text-gray-900 text-sm">{canvas.title}</h2>
@@ -288,14 +290,14 @@ export function Editor() {
             {/* Read-only badge */}
             {!canEdit && (
               <span className="flex items-center gap-1 text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
-                <EyeOff size={12} /> Read-only
+                <EyeOff size={12} /> {t('Read-only')}
               </span>
             )}
 
             {isOwner && (
               <button onClick={() => setShowMembers(true)}
                       className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors">
-                <UserPlus size={13} /> Members
+                <UserPlus size={13} /> {t('Members')}
               </button>
             )}
 
@@ -303,17 +305,17 @@ export function Editor() {
             {isOwner && canvas.visibility !== 'published' && (
               <button onClick={handlePublish} disabled={publishing}
                       className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors disabled:opacity-50">
-                <Globe size={13} /> {publishing ? 'Publishing...' : 'Publish'}
+                <Globe size={13} /> {t(publishing ? 'Publishing...' : 'Publish')}
               </button>
             )}
             {canvas.visibility === 'published' && (
               <span className="text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-1">
-                <Globe size={12} /> Published
+                <Globe size={12} /> {t('Published')}
               </span>
             )}
           </div>
 
-          <OnlineUsers users={onlineUsers} connected={connected} currentUsername={user?.username || 'You'} />
+          <OnlineUsers users={onlineUsers} connected={connected} currentUsername={user?.username || t('You')} />
         </div>
 
         {showMembers && <MemberManager canvasId={canvasId} onClose={() => setShowMembers(false)} />}
@@ -329,7 +331,7 @@ export function Editor() {
               {lockNotice}
             </button>
           )}
-          <Tldraw key={canvasId} onMount={handleMount} components={tldrawComponents} />
+          <Tldraw key={canvasId} locale={language === 'zh' ? 'zh-cn' : 'en'} onMount={handleMount} components={tldrawComponents} />
           <RemoteCursors cursors={awareness} editor={editorInstance} viewportRevision={viewportRevision} />
         </div>
       </div>

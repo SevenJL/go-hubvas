@@ -7,3 +7,4 @@ export { Modal, ConfirmDialog } from './Modal';
 export { ToastProvider } from './Toast';
 export { useToast } from './toast-context';
 export { Spinner, PageLoader, CanvasCardSkeleton, CanvasGridSkeleton, InlineLoader, ErrorState } from './Loading';
+export { LanguageToggle } from './LanguageToggle';

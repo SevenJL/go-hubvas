@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getAccessToken } from '../../services/api';
+import { useI18n } from '../../i18n';
 
 interface CanvasThumbnailProps {
   canvasId: string;
@@ -7,6 +8,7 @@ interface CanvasThumbnailProps {
 
 export function CanvasThumbnail({ canvasId }: CanvasThumbnailProps) {
   const [thumbnail, setThumbnail] = useState<string | null>(null);
+  const { t } = useI18n();
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -41,7 +43,7 @@ export function CanvasThumbnail({ canvasId }: CanvasThumbnailProps) {
     return (
       <img
         src={thumbnail}
-        alt="Canvas preview"
+        alt={t('Canvas preview')}
         className="aspect-video w-full object-cover bg-white"
       />
     );

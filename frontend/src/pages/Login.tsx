@@ -2,10 +2,13 @@ import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../store/AuthContext';
 import { Palette, Mail, Key, AlertCircle } from 'lucide-react';
+import { useI18n } from '../i18n';
+import { LanguageToggle } from '../components/ui';
 
 export function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const { t } = useI18n();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -17,15 +20,15 @@ export function Login() {
 
     // Client-side validation.
     if (!email.trim()) {
-      setError('Email is required');
+      setError(t('Email is required'));
       return;
     }
     if (!email.includes('@')) {
-      setError('Please enter a valid email address');
+      setError(t('Please enter a valid email address'));
       return;
     }
     if (!password) {
-      setError('Password is required');
+      setError(t('Password is required'));
       return;
     }
 
@@ -34,7 +37,7 @@ export function Login() {
       await login(email.trim(), password);
       navigate('/dashboard');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed. Please try again.');
+      setError(err instanceof Error ? err.message : t('Login failed. Please try again.'));
     } finally {
       setLoading(false);
     }
@@ -42,14 +45,15 @@ export function Login() {
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">
+      <LanguageToggle className="absolute right-4 top-4 bg-white shadow-sm ring-1 ring-gray-200" />
       <div className="w-full max-w-sm">
         {/* Brand */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-xl bg-indigo-500 shadow-lg shadow-indigo-200 mb-4">
             <Palette size={28} className="text-white" />
           </div>
-          <h1 className="text-2xl font-bold text-gray-900">Welcome back</h1>
-          <p className="text-sm text-gray-500 mt-1">Sign in to continue to Hubvas</p>
+          <h1 className="text-2xl font-bold text-gray-900">{t('Welcome back')}</h1>
+          <p className="text-sm text-gray-500 mt-1">{t('Sign in to continue to Hubvas')}</p>
         </div>
 
         {/* Form */}
@@ -68,7 +72,7 @@ export function Login() {
           {/* Email */}
           <div>
             <label htmlFor="login-email" className="block text-sm font-medium text-gray-700 mb-1.5">
-              Email address
+              {t('Email address')}
             </label>
             <div className="relative">
               <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -81,7 +85,7 @@ export function Login() {
                            disabled:bg-gray-50"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                placeholder={t('you@example.com')}
                 autoComplete="email"
                 autoFocus
                 disabled={loading}
@@ -92,7 +96,7 @@ export function Login() {
           {/* Password */}
           <div>
             <label htmlFor="login-password" className="block text-sm font-medium text-gray-700 mb-1.5">
-              Password
+              {t('Password')}
             </label>
             <div className="relative">
               <Key size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
@@ -105,7 +109,7 @@ export function Login() {
                            disabled:bg-gray-50"
                 value={password}
                 onChange={e => setPassword(e.target.value)}
-                placeholder="Enter your password"
+                placeholder={t('Enter your password')}
                 autoComplete="current-password"
                 disabled={loading}
               />
@@ -126,18 +130,18 @@ export function Login() {
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                 </svg>
-                Signing in...
+                {t('Signing in...')}
               </span>
             ) : (
-              'Sign in'
+              t('Sign in')
             )}
           </button>
 
           {/* Register link */}
           <p className="text-center text-sm text-gray-500">
-            Don&apos;t have an account?{' '}
+            {t("Don't have an account?")}{' '}
             <Link to="/register" className="text-indigo-600 hover:text-indigo-700 font-medium hover:underline">
-              Create one
+              {t('Create one')}
             </Link>
           </p>
         </form>

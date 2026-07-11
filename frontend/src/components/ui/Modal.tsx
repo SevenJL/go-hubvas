@@ -2,6 +2,7 @@ import { useEffect, useId, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { AlertTriangle, X } from 'lucide-react';
 import { Button } from './Button';
+import { useI18n } from '../../i18n';
 
 interface ModalProps {
   open: boolean;
@@ -30,6 +31,7 @@ export function Modal({
   size = 'md',
   closeOnBackdrop = true,
 }: ModalProps) {
+  const { t } = useI18n();
   const titleId = useId();
   const descriptionId = useId();
 
@@ -72,7 +74,7 @@ export function Modal({
             type="button"
             onClick={onClose}
             className="rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-            aria-label="Close dialog"
+            aria-label={t('Close dialog')}
           >
             <X size={18} />
           </button>
@@ -101,13 +103,14 @@ export function ConfirmDialog({
   open,
   title,
   description,
-  confirmLabel = 'Confirm',
-  cancelLabel = 'Cancel',
+  confirmLabel,
+  cancelLabel,
   danger = false,
   loading = false,
   onConfirm,
   onClose,
 }: ConfirmDialogProps) {
+  const { t } = useI18n();
   return (
     <Modal
       open={open}
@@ -117,8 +120,8 @@ export function ConfirmDialog({
       size="sm"
       footer={
         <>
-          <Button variant="secondary" onClick={onClose} disabled={loading}>{cancelLabel}</Button>
-          <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm} loading={loading}>{confirmLabel}</Button>
+          <Button variant="secondary" onClick={onClose} disabled={loading}>{cancelLabel || t('Cancel')}</Button>
+          <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm} loading={loading}>{confirmLabel || t('Confirm')}</Button>
         </>
       }
     >
