@@ -50,6 +50,7 @@ func main() {
 
 	// ---- Repositories ----
 	canvasRepo := postgres.NewCanvasRepo(pool)
+	userRepo := postgres.NewUserRepo(pool)
 
 	// ---- Domain Services ----
 	jwtSvc := infAuth.NewJWTService(
@@ -120,7 +121,7 @@ func main() {
 	hub := ws.NewHub(snapshotRepo)
 
 	// ---- WS Gateway ----
-	gateway := ws.NewGateway(hub, jwtSvc, permSvc)
+	gateway := ws.NewGateway(hub, jwtSvc, permSvc, userRepo)
 
 	// ---- HTTP Server ----
 	mux := http.NewServeMux()

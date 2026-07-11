@@ -83,7 +83,7 @@ func (h *Hub) handleRegister(client *Client) {
 	h.mu.Lock()
 	room, exists := h.rooms[client.RoomID]
 	if !exists {
-		room = NewRoom(client.RoomID, h.snapshotRepo)
+		room = NewRoom(client.RoomID, h.snapshotRepo, h.loadSnapshot(client.RoomID))
 		h.rooms[client.RoomID] = room
 		log.Printf("[hub] created room %d", client.RoomID)
 	}
@@ -134,6 +134,18 @@ func (h *Hub) collectGarbage() {
 	}
 }
 
+func (h *Hub) loadSnapshot(roomID collaboration.RoomID) []byte {
+	if h.snapshotRepo == nil {
+		return nil
+	}
+	snapshot, err := h.snapshotRepo.Load(h.ctx, roomID)
+	if err != nil {
+		log.Printf("[hub] failed to load snapshot for room %d: %v", roomID, err)
+		return nil
+	}
+	return snapshot
+}
+
 // GetOrCreate returns an existing Room or creates one. Implements RoomManager.
 func (h *Hub) GetOrCreate(roomID collaboration.RoomID) *collaboration.Room {
 	h.mu.Lock()
@@ -143,7 +155,7 @@ func (h *Hub) GetOrCreate(roomID collaboration.RoomID) *collaboration.Room {
 		return r.DomainRoom()
 	}
 
-	room := NewRoom(roomID, h.snapshotRepo)
+	room := NewRoom(roomID, h.snapshotRepo, h.loadSnapshot(roomID))
 	h.rooms[roomID] = room
 	log.Printf("[hub] created room %d", roomID)
 	return room.DomainRoom()
@@ -239,7 +251,7 @@ func startSnapshotLoop(ctx context.Context, room *Room, snapshotRepo collaborati
 		select {
 		case <-ctx.Done():
 			// Final flush before shutdown.
-			data := room.DomainRoom().Snapshot()
+			data := room.Snapshot()
 			if len(data) > 0 {
 				id := room.DomainRoom().ID()
 				if err := snapshotRepo.Save(context.Background(), id, data); err != nil {
@@ -248,7 +260,7 @@ func startSnapshotLoop(ctx context.Context, room *Room, snapshotRepo collaborati
 			}
 			return
 		case <-ticker.C:
-			data := room.DomainRoom().Snapshot()
+			data := room.Snapshot()
 			if len(data) > 0 {
 				id := room.DomainRoom().ID()
 				if err := snapshotRepo.Save(ctx, id, data); err != nil {

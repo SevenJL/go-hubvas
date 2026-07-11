@@ -15,6 +15,8 @@ export function useWebSocket({ canvasId, onMessage, onPresence, onError }: UseWe
   const [connected, setConnected] = useState(false);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const reconnectAttempt = useRef(0);
+  const connectRef = useRef<() => void>(() => undefined);
+  const shouldReconnectRef = useRef(false);
 
   const connect = useCallback(() => {
     const token = getAccessToken();
@@ -63,7 +65,9 @@ export function useWebSocket({ canvasId, onMessage, onPresence, onError }: UseWe
       // Exponential backoff reconnect.
       const delay = Math.min(1000 * 2 ** reconnectAttempt.current, 30000);
       reconnectAttempt.current++;
-      reconnectTimer.current = setTimeout(connect, delay);
+      if (shouldReconnectRef.current) {
+        reconnectTimer.current = setTimeout(() => connectRef.current(), delay);
+      }
     };
 
     ws.onerror = () => {
@@ -72,10 +76,18 @@ export function useWebSocket({ canvasId, onMessage, onPresence, onError }: UseWe
   }, [canvasId, onMessage, onPresence, onError]);
 
   useEffect(() => {
+    connectRef.current = connect;
+    shouldReconnectRef.current = true;
     connect();
     return () => {
+      shouldReconnectRef.current = false;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      wsRef.current?.close();
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
+      wsRef.current = null;
     };
   }, [connect]);
 
@@ -86,7 +98,7 @@ export function useWebSocket({ canvasId, onMessage, onPresence, onError }: UseWe
 
   const sendSync = useCallback((update: Uint8Array) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(update.buffer as ArrayBuffer); // Binary frame.
+      wsRef.current.send(new Uint8Array(update).buffer); // Binary frame.
     }
   }, []);
 

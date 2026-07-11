@@ -24,16 +24,13 @@ const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(() => Boolean(getAccessToken()));
   const [error, setError] = useState<string | null>(null);
 
   // On mount, check if there's a stored token and validate it.
   useEffect(() => {
     const token = getAccessToken();
-    if (!token) {
-      setLoading(false);
-      return;
-    }
+    if (!token) return;
 
     let cancelled = false;
 

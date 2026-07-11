@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Layout } from '../components/layout/Layout';
 import { communityService } from '../services/community';
@@ -10,14 +10,15 @@ export function Community() {
   const [loading, setLoading] = useState(true);
   const [sortBy, setSortBy] = useState('latest');
   const [keyword, setKeyword] = useState('');
+  const [query, setQuery] = useState('');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const navigate = useNavigate();
 
-  const load = async (p = 1) => {
+  const load = useCallback(async (p = 1) => {
     setLoading(true);
     try {
-      const res = await communityService.browse({ sort_by: sortBy, q: keyword || undefined, page: p });
+      const res = await communityService.browse({ sort_by: sortBy, q: query || undefined, page: p });
       setItems(res.items);
       setTotal(res.total_count);
       setPage(p);
@@ -26,13 +27,13 @@ export function Community() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [sortBy, query]);
 
-  useEffect(() => { load(1); }, [sortBy]);
+  useEffect(() => { void load(1); }, [load]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
-    load(1);
+    setQuery(keyword.trim());
   };
 
   const totalPages = Math.ceil(total / 20);

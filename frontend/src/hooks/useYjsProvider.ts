@@ -25,6 +25,10 @@ interface UseYjsProviderResult {
 const RECONNECT_BASE_MS = 1000;
 const RECONNECT_MAX_MS = 30000;
 
+function toArrayBuffer(update: Uint8Array): ArrayBuffer {
+  return new Uint8Array(update).buffer;
+}
+
 export function useYjsProvider({
   canvasId,
   token,
@@ -32,19 +36,24 @@ export function useYjsProvider({
   userId,
   onSyncMessage,
 }: UseYjsProviderOptions): UseYjsProviderResult {
-  const docRef = useRef<Y.Doc>(new Y.Doc());
+  const [doc] = useState(() => new Y.Doc());
   const wsRef = useRef<WebSocket | null>(null);
   const seqRef = useRef(0);
   const reconnectAttempt = useRef(0);
-  const reconnectTimer = useRef<ReturnType<typeof setTimeout>>();
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const connectRef = useRef<() => void>(() => undefined);
+  const shouldReconnectRef = useRef(false);
   const onSyncMessageRef = useRef(onSyncMessage);
-  onSyncMessageRef.current = onSyncMessage;
 
   const [connected, setConnected] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<PresenceMember[]>([]);
   const [awareness, setAwareness] = useState<
     Map<number, { x: number; y: number; username: string; color: string }>
   >(new Map());
+
+  useEffect(() => {
+    onSyncMessageRef.current = onSyncMessage;
+  }, [onSyncMessage]);
 
   const sendTextMessage = useCallback((type: string, payload: unknown) => {
     const ws = wsRef.current;
@@ -68,25 +77,22 @@ export function useYjsProvider({
     };
 
     ws.onmessage = (event) => {
-      // Binary frames — Yjs CRDT updates.
       if (event.data instanceof ArrayBuffer) {
         try {
-          Y.applyUpdate(docRef.current, new Uint8Array(event.data));
-        } catch { /* skip */ }
+          Y.applyUpdate(doc, new Uint8Array(event.data), 'remote');
+        } catch {
+          // Ignore malformed remote updates.
+        }
         return;
       }
 
-      // Text frames — JSON protocol.
       try {
         const msg: WSMessage = JSON.parse(event.data);
 
         switch (msg.type) {
-          case 'sync': {
-            // Text-based sync message (tldraw JSON snapshot).
+          case 'sync':
             onSyncMessageRef.current?.(msg.payload);
             break;
-          }
-
           case 'awareness': {
             const p = msg.payload as {
               user_id?: string;
@@ -107,55 +113,66 @@ export function useYjsProvider({
             }
             break;
           }
-
           case 'presence': {
             const p = msg.payload as { online?: PresenceMember[] } | undefined;
             if (p?.online) setOnlineUsers(p.online);
             break;
           }
-
           case 'error': {
             const p = msg.payload as { message?: string } | undefined;
             if (p?.message) console.warn('[ws] server error:', p.message);
             break;
           }
         }
-      } catch { /* skip */ }
+      } catch {
+        // Ignore malformed text messages.
+      }
     };
 
     ws.onclose = () => {
       setConnected(false);
-      wsRef.current = null;
+      if (wsRef.current === ws) wsRef.current = null;
+      if (!shouldReconnectRef.current) return;
+
       const delay = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttempt.current, RECONNECT_MAX_MS);
       reconnectAttempt.current++;
-      reconnectTimer.current = setTimeout(connect, delay);
+      reconnectTimer.current = setTimeout(() => connectRef.current(), delay);
     };
-  }, [canvasId, token, userId, username, sendTextMessage]);
+  }, [canvasId, token, userId, username, sendTextMessage, doc]);
 
   useEffect(() => {
+    connectRef.current = connect;
+    shouldReconnectRef.current = true;
     connect();
     return () => {
+      shouldReconnectRef.current = false;
       if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
-      wsRef.current?.close();
+      reconnectTimer.current = undefined;
+      const ws = wsRef.current;
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
+      wsRef.current = null;
     };
   }, [connect]);
 
-  // Yjs doc → binary WebSocket frames.
   useEffect(() => {
-    const doc = docRef.current;
     const handler = (update: Uint8Array, origin: unknown) => {
       if (origin === 'remote') return;
       if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(update.buffer);
+        wsRef.current.send(toArrayBuffer(update));
       }
     };
     doc.on('update', handler);
-    return () => { doc.off('update', handler); };
-  }, []);
+    return () => doc.off('update', handler);
+  }, [doc]);
+
+  useEffect(() => () => doc.destroy(), [doc]);
 
   const sendSync = useCallback((update: Uint8Array) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(update.buffer);
+      wsRef.current.send(toArrayBuffer(update));
     }
   }, []);
 
@@ -166,15 +183,7 @@ export function useYjsProvider({
     [userId, username, sendTextMessage],
   );
 
-  return {
-    doc: docRef.current,
-    connected,
-    awareness,
-    onlineUsers,
-    sendSync,
-    sendAwareness,
-    sendTextMessage,
-  };
+  return { doc, connected, awareness, onlineUsers, sendSync, sendAwareness, sendTextMessage };
 }
 
 function stringToColor(str: string): string {

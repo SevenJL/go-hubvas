@@ -23,6 +23,7 @@ import (
 //	This serial design eliminates the need for locks on canvas state.
 type Room struct {
 	domainRoom *collaboration.Room // domain aggregate
+	domainMu   sync.Mutex
 
 	// inbound is the serial processing queue. All client operations
 	// are pushed here by readPumps and processed by the Room goroutine.
@@ -32,6 +33,10 @@ type Room struct {
 	clients   map[*Client]bool
 	clientsMu sync.RWMutex
 
+	// snapshot is a concurrency-safe copy used by persistence and initial replay.
+	snapshotMu sync.RWMutex
+	snapshot   []byte
+
 	// snapshotRepo for periodic persistence.
 	snapshotRepo collaboration.SnapshotRepository
 
@@ -40,11 +45,12 @@ type Room struct {
 }
 
 // NewRoom creates a new Room and starts its processing goroutine.
-func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotRepository) *Room {
+func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotRepository, initialSnapshot []byte) *Room {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	r := &Room{
-		domainRoom:   collaboration.NewRoom(id, nil),
+		domainRoom:   collaboration.NewRoom(id, cloneBytes(initialSnapshot)),
+		snapshot:     cloneBytes(initialSnapshot),
 		inbound:      make(chan collaboration.Operation, 1024),
 		clients:      make(map[*Client]bool),
 		snapshotRepo: snapshotRepo,
@@ -53,7 +59,9 @@ func NewRoom(id collaboration.RoomID, snapshotRepo collaboration.SnapshotReposit
 	}
 
 	go r.processLoop()
-	go startSnapshotLoop(ctx, r, snapshotRepo)
+	if snapshotRepo != nil {
+		go startSnapshotLoop(ctx, r, snapshotRepo)
+	}
 
 	return r
 }
@@ -72,7 +80,9 @@ func (r *Room) processLoop() {
 
 // processOp validates, applies, and broadcasts a single operation.
 func (r *Room) processOp(op collaboration.Operation) {
+	r.domainMu.Lock()
 	result, err := r.domainRoom.ProcessOp(op)
+	r.domainMu.Unlock()
 	if err != nil {
 		log.Printf("[room %d] op error from user %d: %v", r.domainRoom.ID(), op.UserID, err)
 		r.sendToClient(op.UserID, NewErrorMessage("invalid_op", err.Error()))
@@ -81,6 +91,9 @@ func (r *Room) processOp(op collaboration.Operation) {
 
 	if result == nil {
 		return
+	}
+	if result.Operation.Type == collaboration.OpSync {
+		r.setSnapshot(result.Operation.Payload)
 	}
 
 	// Sync operations received as binary frames (Yjs CRDT) → broadcast as binary.
@@ -214,7 +227,11 @@ func (r *Room) Register(client *Client) {
 	r.clients[client] = true
 	r.clientsMu.Unlock()
 
+	r.domainMu.Lock()
 	r.domainRoom.Join(client.UserID, client.Username)
+	r.domainMu.Unlock()
+	client.Start()
+	r.sendInitialSnapshot(client)
 
 	log.Printf("[room %d] user %d (%s) joined (total: %d)",
 		r.domainRoom.ID(), client.UserID, client.Username, r.MemberCount())
@@ -223,13 +240,52 @@ func (r *Room) Register(client *Client) {
 	r.broadcastPresence()
 }
 
+func (r *Room) sendInitialSnapshot(client *Client) {
+	snapshot := r.Snapshot()
+	if len(snapshot) == 0 {
+		return
+	}
+	if json.Valid(snapshot) {
+		data, err := json.Marshal(Message{Type: MsgTypeSync, Payload: snapshot})
+		if err == nil {
+			client.Send(data)
+		}
+		return
+	}
+	client.SendBinary(snapshot)
+}
+
+func (r *Room) setSnapshot(data []byte) {
+	r.snapshotMu.Lock()
+	r.snapshot = cloneBytes(data)
+	r.snapshotMu.Unlock()
+}
+
+// Snapshot returns a safe copy of the latest persisted room state.
+func (r *Room) Snapshot() []byte {
+	r.snapshotMu.RLock()
+	defer r.snapshotMu.RUnlock()
+	return cloneBytes(r.snapshot)
+}
+
+func cloneBytes(data []byte) []byte {
+	if len(data) == 0 {
+		return nil
+	}
+	result := make([]byte, len(data))
+	copy(result, data)
+	return result
+}
+
 // Unregister removes a client from the room. Broadcasts full presence after leave.
 func (r *Room) Unregister(client *Client) {
 	r.clientsMu.Lock()
 	delete(r.clients, client)
 	r.clientsMu.Unlock()
 
+	r.domainMu.Lock()
 	r.domainRoom.Leave(client.UserID)
+	r.domainMu.Unlock()
 
 	log.Printf("[room %d] user %d left (total: %d)",
 		r.domainRoom.ID(), client.UserID, r.MemberCount())
@@ -283,7 +339,12 @@ func (r *Room) MemberCount() int {
 
 // IsIdle returns true if the room has been inactive and has no members.
 func (r *Room) IsIdle(timeout time.Duration) bool {
-	return r.MemberCount() == 0 && r.domainRoom.IsIdle(timeout)
+	if r.MemberCount() != 0 {
+		return false
+	}
+	r.domainMu.Lock()
+	defer r.domainMu.Unlock()
+	return r.domainRoom.IsIdle(timeout)
 }
 
 // Shutdown stops the room's goroutine and flushes state.

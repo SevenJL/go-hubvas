@@ -37,24 +37,28 @@ type Client struct {
 	UserID   identity.UserID
 	Username string
 	RoomID   collaboration.RoomID
-	Role     string // from the domain; set after auth
+	Role     string
+	CanEdit  bool
 
 	conn   *websocket.Conn
-	send   chan []byte            // buffered outbound channel
-	hub    *Hub                   // the room registry (for deregistration)
+	send   chan []byte                   // buffered outbound channel
+	hub    *Hub                          // the room registry (for deregistration)
 	onRead func(collaboration.Operation) // callback to the Room's inbound
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	startOnce sync.Once
 }
 
-// NewClient creates a Client and starts its pumps.
+// NewClient creates a Client. Start must be called after room registration.
 func NewClient(
 	conn *websocket.Conn,
 	userID identity.UserID,
 	username string,
 	roomID collaboration.RoomID,
+	role string,
+	canEdit bool,
 	hub *Hub,
 	onRead func(collaboration.Operation),
 ) *Client {
@@ -64,6 +68,8 @@ func NewClient(
 		UserID:   userID,
 		Username: username,
 		RoomID:   roomID,
+		Role:     role,
+		CanEdit:  canEdit,
 		conn:     conn,
 		send:     make(chan []byte, sendBufferSize),
 		hub:      hub,
@@ -72,11 +78,16 @@ func NewClient(
 		cancel:   cancel,
 	}
 
-	c.wg.Add(2)
-	go c.readPump()
-	go c.writePump()
-
 	return c
+}
+
+// Start launches the client pumps once registration has wired the room callback.
+func (c *Client) Start() {
+	c.startOnce.Do(func() {
+		c.wg.Add(2)
+		go c.readPump()
+		go c.writePump()
+	})
 }
 
 // readPump blocks on reading messages from the WebSocket connection and
@@ -106,6 +117,10 @@ func (c *Client) readPump() {
 
 		switch msgType {
 		case websocket.MessageBinary:
+			if !canSubmitOperation(c.CanEdit, MsgTypeSync) {
+				c.sendError("forbidden", "read-only clients cannot modify the canvas")
+				continue
+			}
 			// Binary frame — raw Yjs CRDT update. Pass directly as a sync operation.
 			op := collaboration.Operation{
 				Type:    collaboration.OpSync,
@@ -125,6 +140,23 @@ func (c *Client) readPump() {
 				continue
 			}
 
+			if msg.Type == MsgTypePresence {
+				// Presence is generated from the server-side client registry.
+				continue
+			}
+			if !canSubmitOperation(c.CanEdit, msg.Type) {
+				c.sendError("forbidden", "read-only clients cannot modify the canvas")
+				continue
+			}
+			if msg.Type == MsgTypeAwareness || msg.Type == MsgTypeChat {
+				payload, err := authoritativePayload(msg.Payload, c.UserID, c.Username)
+				if err != nil {
+					c.sendError("bad_request", "invalid message payload")
+					continue
+				}
+				msg.Payload = payload
+			}
+
 			op := ToOperation(msg, c.UserID)
 			if c.onRead != nil {
 				c.onRead(op)
@@ -134,6 +166,22 @@ func (c *Client) readPump() {
 			log.Printf("[ws] unsupported message type %d from user %d", msgType, c.UserID)
 		}
 	}
+}
+
+func canSubmitOperation(canEdit bool, messageType string) bool {
+	return messageType != MsgTypeSync || canEdit
+}
+
+func authoritativePayload(payload json.RawMessage, userID identity.UserID, username string) (json.RawMessage, error) {
+	values := make(map[string]interface{})
+	if len(payload) > 0 && string(payload) != "null" {
+		if err := json.Unmarshal(payload, &values); err != nil {
+			return nil, err
+		}
+	}
+	values["user_id"] = int64(userID)
+	values["username"] = username
+	return json.Marshal(values)
 }
 
 // writePump drains the Client's send channel and writes to the WebSocket.

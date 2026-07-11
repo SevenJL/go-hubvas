@@ -45,9 +45,9 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	r.GET("/api/community", cfg.CommunityHandler.Browse)
 
 	// Canvas detail — public (for published canvases).
-	r.GET("/api/canvases/:id", cfg.CanvasHandler.Get)
+	r.GET("/api/canvases/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CanvasHandler.Get)
 	r.GET("/api/canvases/:id/comments", cfg.CommunityHandler.GetComments)
-	r.GET("/api/canvases/:id/snapshot", cfg.SnapshotHandler.Load)
+	r.GET("/api/canvases/:id/snapshot", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.SnapshotHandler.Load)
 
 	// ---- Protected routes (JWT required) ----
 
@@ -75,9 +75,12 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	}
 
 	// WebSocket (JWT via query param, verified in the gateway).
-	r.GET("/ws", func(c *gin.Context) {
-		cfg.WSGateway.ServeHTTP(c.Writer, c.Request)
-	})
+	// The API-only process intentionally leaves WSGateway nil.
+	if cfg.WSGateway != nil {
+		r.GET("/ws", func(c *gin.Context) {
+			cfg.WSGateway.ServeHTTP(c.Writer, c.Request)
+		})
+	}
 
 	return r
 }

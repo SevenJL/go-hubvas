@@ -162,9 +162,9 @@ func TestRoom_ProcessOp_Sync(t *testing.T) {
 	r.Join(uid, "alice")
 
 	op := Operation{
-		Type:   OpSync,
-		UserID: uid,
-		Seq:    1,
+		Type:    OpSync,
+		UserID:  uid,
+		Seq:     1,
 		Payload: []byte(`{"update":"test"}`),
 	}
 
@@ -236,6 +236,7 @@ func TestRoom_ProcessOp_UnknownType(t *testing.T) {
 func TestRoom_IsIdle(t *testing.T) {
 	r := NewRoom(RoomID(1), nil)
 	// A freshly created room with no members should go idle after the timeout.
+	time.Sleep(time.Microsecond)
 	if !r.IsIdle(time.Nanosecond) {
 		t.Fatal("expected room to be idle immediately with nanosecond timeout")
 	}

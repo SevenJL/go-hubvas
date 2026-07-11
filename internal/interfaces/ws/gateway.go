@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"strconv"
@@ -21,9 +22,10 @@ import (
 //  3. Validate canvas access permission
 //  4. Create Client and register with the Hub
 type Gateway struct {
-	hub            *Hub
-	tokenSvc       TokenValidator
-	permissionSvc  collaboration.PermissionService
+	hub           *Hub
+	tokenSvc      TokenValidator
+	permissionSvc collaboration.PermissionService
+	userLookup    UserLookup
 }
 
 // TokenValidator is the minimal interface for JWT validation.
@@ -32,16 +34,23 @@ type TokenValidator interface {
 	ValidateAccessToken(tokenString string) (identity.UserID, error)
 }
 
+// UserLookup resolves the authenticated user's server-authoritative profile.
+type UserLookup interface {
+	FindByID(ctx context.Context, id identity.UserID) (*identity.User, error)
+}
+
 // NewGateway creates a WebSocket gateway.
 func NewGateway(
 	hub *Hub,
 	tokenSvc TokenValidator,
 	permissionSvc collaboration.PermissionService,
+	userLookup UserLookup,
 ) *Gateway {
 	return &Gateway{
 		hub:           hub,
 		tokenSvc:      tokenSvc,
 		permissionSvc: permissionSvc,
+		userLookup:    userLookup,
 	}
 }
 
@@ -86,6 +95,21 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	role, err := g.permissionSvc.GetRole(r.Context(), canvas.CanvasID(canvasID), userID)
+	roleName := canvas.RoleViewer.String()
+	canEdit := false
+	if err == nil {
+		roleName = role.String()
+		canEdit = role.CanEdit()
+	}
+	// A published non-member has view access but no membership role, so remains a read-only viewer.
+
+	user, err := g.userLookup.FindByID(r.Context(), userID)
+	if err != nil {
+		http.Error(w, `{"code":"invalid_user","message":"authenticated user no longer exists"}`, http.StatusUnauthorized)
+		return
+	}
+
 	// 4. Upgrade to WebSocket.
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: false,
@@ -95,16 +119,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Create Client.
-	// The username is fetched from the token or a separate call;
-	// for now we use the userID as a placeholder.
+	// 5. Create a client with server-authoritative identity and permissions.
 	client := NewClient(
 		conn,
 		userID,
-		strconv.FormatInt(int64(userID), 10), // placeholder username
+		user.Username(),
 		collaboration.RoomID(canvasID),
+		roleName,
+		canEdit,
 		g.hub,
-		nil, // onRead will be wired by Room.Register
+		nil, // onRead will be wired by Room.Register before pumps start
 	)
 
 	// 6. Register with the Hub (which routes to the correct Room).

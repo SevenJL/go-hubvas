@@ -11,10 +11,10 @@ import (
 
 // CanvasApplicationService orchestrates canvas-related use cases.
 type CanvasApplicationService struct {
-	canvasRepo   canvasDomain.CanvasRepository
-	snapshotRepo canvasDomain.SnapshotRepository
+	canvasRepo    canvasDomain.CanvasRepository
+	snapshotRepo  canvasDomain.SnapshotRepository
 	communityRepo communityDomain.CommunityRepository
-	idGen        shared.IDGenerator
+	idGen         shared.IDGenerator
 }
 
 // NewCanvasApplicationService creates the application service.
@@ -25,10 +25,10 @@ func NewCanvasApplicationService(
 	idGen shared.IDGenerator,
 ) *CanvasApplicationService {
 	return &CanvasApplicationService{
-		canvasRepo:   canvasRepo,
-		snapshotRepo: snapshotRepo,
+		canvasRepo:    canvasRepo,
+		snapshotRepo:  snapshotRepo,
 		communityRepo: communityRepo,
-		idGen:        idGen,
+		idGen:         idGen,
 	}
 }
 
@@ -46,11 +46,15 @@ func (s *CanvasApplicationService) Create(ctx context.Context, ownerID identity.
 	return toCanvasDTO(c, 0), nil
 }
 
-// Get retrieves a canvas by ID.
-func (s *CanvasApplicationService) Get(ctx context.Context, id canvasDomain.CanvasID) (*CanvasDTO, error) {
+// Get retrieves a canvas by ID if it is published or the requester is a member.
+// requesterID may be zero for anonymous requests.
+func (s *CanvasApplicationService) Get(ctx context.Context, id canvasDomain.CanvasID, requesterID identity.UserID) (*CanvasDTO, error) {
 	c, err := s.canvasRepo.FindByID(ctx, id)
 	if err != nil {
 		return nil, err
+	}
+	if !c.Visibility().IsPublished() && !c.IsMember(requesterID) {
+		return nil, shared.NewDomainError(shared.ErrForbidden, "you do not have access to this canvas")
 	}
 	return toCanvasDTO(c, 0), nil
 }
@@ -122,6 +126,9 @@ func (s *CanvasApplicationService) Fork(ctx context.Context, sourceID canvasDoma
 	source, err := s.canvasRepo.FindByID(ctx, sourceID)
 	if err != nil {
 		return nil, err
+	}
+	if !source.Visibility().IsPublished() && !source.IsMember(userID) {
+		return nil, shared.NewDomainError(shared.ErrForbidden, "you do not have access to fork this canvas")
 	}
 
 	newID := canvasDomain.CanvasID(s.idGen.NextID())

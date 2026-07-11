@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 	appCanvas "github.com/hubvas/internal/application/canvas"
 	"github.com/hubvas/internal/domain/canvas"
 	"github.com/hubvas/internal/domain/identity"
+	"github.com/hubvas/internal/domain/shared"
+	"github.com/hubvas/internal/interfaces/http/middleware"
 	"github.com/hubvas/internal/interfaces/http/response"
 )
 
@@ -46,9 +49,14 @@ func (h *CanvasHandler) Get(c *gin.Context) {
 		return
 	}
 
-	dto, err := h.appSvc.Get(c.Request.Context(), canvas.CanvasID(id))
+	requesterID := middleware.GetUserID(c)
+	dto, err := h.appSvc.Get(c.Request.Context(), canvas.CanvasID(id), requesterID)
 	if err != nil {
-		response.NotFound(c, "canvas not found")
+		if errors.Is(err, shared.ErrForbidden) {
+			response.Forbidden(c, "you do not have access to this canvas")
+		} else {
+			response.NotFound(c, "canvas not found")
+		}
 		return
 	}
 	response.OK(c, dto)
@@ -93,7 +101,11 @@ func (h *CanvasHandler) Fork(c *gin.Context) {
 
 	dto, err := h.appSvc.Fork(c.Request.Context(), canvas.CanvasID(id), identity.UserID(userID))
 	if err != nil {
-		response.Error(c, 400, "fork_failed", err.Error())
+		if errors.Is(err, shared.ErrForbidden) {
+			response.Forbidden(c, "you do not have access to fork this canvas")
+		} else {
+			response.Error(c, 400, "fork_failed", err.Error())
+		}
 		return
 	}
 	response.Created(c, dto)
