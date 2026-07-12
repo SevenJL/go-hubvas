@@ -1,106 +1,103 @@
 package config
 
 import (
+	"fmt"
 	"time"
 )
 
 // Config is the top-level application configuration.
-// It maps to config.yaml and environment variable overrides.
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	Database DatabaseConfig `yaml:"database"`
-	Redis    RedisConfig    `yaml:"redis"`
-	NATS     NATSConfig     `yaml:"nats"`
-	Storage  StorageConfig  `yaml:"storage"`
-	Auth     AuthConfig     `yaml:"auth"`
-	WS       WSConfig       `yaml:"ws"`
+	Environment string         `yaml:"environment"`
+	Server      ServerConfig   `yaml:"server"`
+	Database    DatabaseConfig `yaml:"database"`
+	Redis       RedisConfig    `yaml:"redis"`
+	NATS        NATSConfig     `yaml:"nats"`
+	Storage     StorageConfig  `yaml:"storage"`
+	Auth        AuthConfig     `yaml:"auth"`
+	ID          IDConfig       `yaml:"id"`
+	WS          WSConfig       `yaml:"ws"`
 }
 
-// ServerConfig holds HTTP and WS server settings.
+func (c Config) IsProduction() bool { return c.Environment == "production" }
+
 type ServerConfig struct {
-	APIHost      string        `yaml:"api_host" env:"API_HOST" default:"0.0.0.0"`
-	APIPort      int           `yaml:"api_port" env:"API_PORT" default:"8080"`
-	WSHost       string        `yaml:"ws_host" env:"WS_HOST" default:"0.0.0.0"`
-	WSPort       int           `yaml:"ws_port" env:"WS_PORT" default:"8081"`
-	ReadTimeout  time.Duration `yaml:"read_timeout" default:"30s"`
-	WriteTimeout time.Duration `yaml:"write_timeout" default:"30s"`
+	APIHost           string        `yaml:"api_host"`
+	APIPort           int           `yaml:"api_port"`
+	WSHost            string        `yaml:"ws_host"`
+	WSPort            int           `yaml:"ws_port"`
+	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
+	ReadTimeout       time.Duration `yaml:"read_timeout"`
+	WriteTimeout      time.Duration `yaml:"write_timeout"`
+	IdleTimeout       time.Duration `yaml:"idle_timeout"`
+	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`
+	TrustedProxies    []string      `yaml:"trusted_proxies"`
 }
 
-// DatabaseConfig holds PostgreSQL connection settings.
 type DatabaseConfig struct {
-	Host     string `yaml:"host" env:"DB_HOST" default:"localhost"`
-	Port     int    `yaml:"port" env:"DB_PORT" default:"5432"`
-	User     string `yaml:"user" env:"DB_USER" default:"hubvas"`
-	Password string `yaml:"password" env:"DB_PASSWORD"`
-	DBName   string `yaml:"dbname" env:"DB_NAME" default:"hubvas"`
-	SSLMode  string `yaml:"sslmode" default:"disable"`
-	MaxConns int    `yaml:"max_conns" default:"20"`
+	Host              string        `yaml:"host"`
+	Port              int           `yaml:"port"`
+	User              string        `yaml:"user"`
+	Password          string        `yaml:"password"`
+	DBName            string        `yaml:"dbname"`
+	SSLMode           string        `yaml:"sslmode"`
+	MaxConns          int32         `yaml:"max_conns"`
+	MinConns          int32         `yaml:"min_conns"`
+	MaxConnLifetime   time.Duration `yaml:"max_conn_lifetime"`
+	MaxConnIdleTime   time.Duration `yaml:"max_conn_idle_time"`
+	HealthCheckPeriod time.Duration `yaml:"health_check_period"`
 }
 
-// RedisConfig holds Redis connection settings.
 type RedisConfig struct {
-	Addr     string `yaml:"addr" env:"REDIS_ADDR" default:"localhost:6379"`
-	Password string `yaml:"password" env:"REDIS_PASSWORD"`
-	DB       int    `yaml:"db" default:"0"`
-	PoolSize int    `yaml:"pool_size" default:"10"`
+	Addr     string `yaml:"addr"`
+	Password string `yaml:"password"`
+	DB       int    `yaml:"db"`
+	PoolSize int    `yaml:"pool_size"`
 }
 
-// NATSConfig holds NATS connection settings.
 type NATSConfig struct {
-	URL   string `yaml:"url" env:"NATS_URL" default:"nats://localhost:4222"`
-	Token string `yaml:"token" env:"NATS_TOKEN"`
+	URL   string `yaml:"url"`
+	Token string `yaml:"token"`
 }
 
-// StorageConfig holds object storage (MinIO/S3) settings.
 type StorageConfig struct {
-	Endpoint       string        `yaml:"endpoint" env:"STORAGE_ENDPOINT" default:"localhost:9000"`
-	AccessKey      string        `yaml:"access_key" env:"STORAGE_ACCESS_KEY"`
-	SecretKey      string        `yaml:"secret_key" env:"STORAGE_SECRET_KEY"`
-	Bucket         string        `yaml:"bucket" default:"hubvas-snapshots"`
-	MediaBucket    string        `yaml:"media_bucket" default:"hubvas-media"`
+	Endpoint       string        `yaml:"endpoint"`
+	AccessKey      string        `yaml:"access_key"`
+	SecretKey      string        `yaml:"secret_key"`
+	Bucket         string        `yaml:"bucket"`
+	MediaBucket    string        `yaml:"media_bucket"`
 	PublicBaseURL  string        `yaml:"public_base_url"`
-	PresignTTL     time.Duration `yaml:"presign_ttl" default:"15m"`
-	AvatarMaxBytes int64         `yaml:"avatar_max_bytes" default:"5242880"`
-	UseSSL         bool          `yaml:"use_ssl" default:"false"`
+	PresignTTL     time.Duration `yaml:"presign_ttl"`
+	AvatarMaxBytes int64         `yaml:"avatar_max_bytes"`
+	UseSSL         bool          `yaml:"use_ssl"`
 }
 
-// AuthConfig holds authentication settings.
 type AuthConfig struct {
-	AccessTokenTTL  time.Duration `yaml:"access_token_ttl" default:"15m"`
-	RefreshTokenTTL time.Duration `yaml:"refresh_token_ttl" default:"720h"` // 30 days
-	AccessSecret    string        `yaml:"access_secret" env:"JWT_ACCESS_SECRET"`
-	RefreshSecret   string        `yaml:"refresh_secret" env:"JWT_REFRESH_SECRET"`
-	BcryptCost      int           `yaml:"bcrypt_cost" default:"12"`
+	AccessTokenTTL  time.Duration `yaml:"access_token_ttl"`
+	RefreshTokenTTL time.Duration `yaml:"refresh_token_ttl"`
+	AccessSecret    string        `yaml:"access_secret"`
+	RefreshSecret   string        `yaml:"refresh_secret"` // retained for rolling-upgrade compatibility
+	Issuer          string        `yaml:"issuer"`
+	Audience        string        `yaml:"audience"`
+	BcryptCost      int           `yaml:"bcrypt_cost"`
+	CookieName      string        `yaml:"cookie_name"`
+	CookieDomain    string        `yaml:"cookie_domain"`
+	CookieSecure    bool          `yaml:"cookie_secure"`
+	CookieSameSite  string        `yaml:"cookie_same_site"`
 }
 
-// WSConfig holds WebSocket-specific settings.
+type IDConfig struct {
+	NodeID int64 `yaml:"node_id"`
+}
+
 type WSConfig struct {
-	IdleTimeout      time.Duration `yaml:"idle_timeout" default:"5m"`
-	GarbageInterval  time.Duration `yaml:"gc_interval" default:"1m"`
-	SnapshotInterval time.Duration `yaml:"snapshot_interval" default:"30s"`
-	MaxMessageSize   int64         `yaml:"max_message_size" default:"524288"` // 512 KB
-	SendBufferSize   int           `yaml:"send_buffer_size" default:"256"`
-	InboundQueueSize int           `yaml:"inbound_queue_size" default:"1024"`
+	IdleTimeout      time.Duration `yaml:"idle_timeout"`
+	GarbageInterval  time.Duration `yaml:"gc_interval"`
+	SnapshotInterval time.Duration `yaml:"snapshot_interval"`
+	MaxMessageSize   int64         `yaml:"max_message_size"`
+	SendBufferSize   int           `yaml:"send_buffer_size"`
+	InboundQueueSize int           `yaml:"inbound_queue_size"`
 }
 
-// DSN returns the PostgreSQL connection string.
 func (d DatabaseConfig) DSN() string {
-	return "host=" + d.Host +
-		" port=" + itoa(d.Port) +
-		" user=" + d.User +
-		" password=" + d.Password +
-		" dbname=" + d.DBName +
-		" sslmode=" + d.SSLMode
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	digits := ""
-	for n > 0 {
-		digits = string(rune('0'+n%10)) + digits
-		n /= 10
-	}
-	return digits
+	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s", d.Host, d.Port, d.User, d.Password, d.DBName, d.SSLMode)
 }

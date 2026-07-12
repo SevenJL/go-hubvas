@@ -7,10 +7,10 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	natsgo "github.com/nats-io/nats.go"
@@ -28,104 +28,84 @@ import (
 )
 
 func configPath() string {
-	if path := os.Getenv("HUBVAS_CONFIG"); path != "" {
-		return path
+	if p := os.Getenv("HUBVAS_CONFIG"); p != "" {
+		return p
 	}
 	return "configs/config.yaml"
+}
+func required(cfg config.Config, name string, err error) {
+	if err != nil && cfg.IsProduction() {
+		log.Fatalf("required dependency %s unavailable: %v", name, err)
+	}
 }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Starting Hubvas WebSocket Server...")
-
-	// ---- Configuration ----
 	cfg, err := config.Load(configPath())
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
-
-	// ---- Database (required) ----
-	pool, err := pgxpool.New(context.Background(), cfg.Database.DSN())
+	rootCtx, cancelRoot := context.WithCancel(context.Background())
+	defer cancelRoot()
+	pool, err := postgres.NewPool(rootCtx, cfg.Database)
 	if err != nil {
-		log.Fatalf("failed to connect to database: %v", err)
+		log.Fatalf("failed to create database pool: %v", err)
 	}
 	defer pool.Close()
-
-	if err := pool.Ping(context.Background()); err != nil {
-		log.Printf("WARNING: database ping failed: %v", err)
-	} else {
-		log.Println("Connected to PostgreSQL")
-	}
-
-	// ---- Repositories ----
+	dbErr := pool.Ping(rootCtx)
+	required(cfg, "postgres", dbErr)
 	canvasRepo := postgres.NewCanvasRepo(pool)
 	userRepo := postgres.NewUserRepo(pool)
-
-	// ---- Domain Services ----
-	jwtSvc := infAuth.NewJWTService(
-		cfg.Auth.AccessSecret, cfg.Auth.RefreshSecret,
-		cfg.Auth.AccessTokenTTL, cfg.Auth.RefreshTokenTTL,
-	)
+	jwtSvc := infAuth.NewJWTServiceWithClaims(cfg.Auth.AccessSecret, cfg.Auth.AccessTokenTTL, cfg.Auth.Issuer, cfg.Auth.Audience)
 	permSvc := infAuth.NewCanvasPermissionService(canvasRepo)
 
-	// ---- Redis (optional — distributed presence) ----
+	redisClient := goredis.NewClient(&goredis.Options{Addr: cfg.Redis.Addr, Password: cfg.Redis.Password, DB: cfg.Redis.DB, PoolSize: cfg.Redis.PoolSize})
+	defer redisClient.Close()
+	redisErr := redisClient.Ping(rootCtx).Err()
+	required(cfg, "redis", redisErr)
 	var presenceRepo collaboration.PresenceRepository
 	var lockRepo collaboration.LockRepository
-	if cfg.Redis.Addr != "" {
-		redisClient := goredis.NewClient(&goredis.Options{
-			Addr:     cfg.Redis.Addr,
-			Password: cfg.Redis.Password,
-			DB:       cfg.Redis.DB,
-			PoolSize: cfg.Redis.PoolSize,
-		})
-		if err := redisClient.Ping(context.Background()).Err(); err != nil {
-			log.Printf("WARNING: Redis unavailable — presence disabled: %v", err)
-		} else {
-			rp := infredis.NewPresenceRepo(redisClient)
-			presenceRepo = rp
-			lockRepo = rp
-			log.Println("Connected to Redis (distributed presence and object locks enabled)")
-		}
+	if redisErr == nil {
+		rp := infredis.NewPresenceRepo(redisClient)
+		presenceRepo = rp
+		lockRepo = rp
 	} else {
-		log.Println("INFO: Redis not configured — running without distributed presence")
+		log.Printf("WARNING: Redis unavailable; distributed presence disabled: %v", redisErr)
 	}
 
-	// ---- MinIO (optional — snapshot persistence) ----
+	var minioClient *minio.Client
+	var storageErr error
 	var snapshotRepo collaboration.SnapshotRepository = &memorySnapshotRepo{data: make(map[int64][]byte)}
-	if cfg.Storage.Endpoint != "" && cfg.Storage.AccessKey != "" {
-		minioClient, err := minio.New(cfg.Storage.Endpoint, &minio.Options{
-			Creds:  credentials.NewStaticV4(cfg.Storage.AccessKey, cfg.Storage.SecretKey, ""),
-			Secure: cfg.Storage.UseSSL,
-		})
-		if err != nil {
-			log.Printf("WARNING: MinIO client creation failed — using in-memory snapshot store: %v", err)
-		} else {
-			snapshotRepo = infminio.NewSnapshotRepo(minioClient, cfg.Storage.Bucket)
-			log.Println("Connected to MinIO (snapshot persistence enabled)")
+	minioClient, storageErr = minio.New(cfg.Storage.Endpoint, &minio.Options{Creds: credentials.NewStaticV4(cfg.Storage.AccessKey, cfg.Storage.SecretKey, ""), Secure: cfg.Storage.UseSSL})
+	if storageErr == nil {
+		var exists bool
+		exists, storageErr = minioClient.BucketExists(rootCtx, cfg.Storage.Bucket)
+		if storageErr == nil && !exists {
+			storageErr = fmt.Errorf("snapshot bucket %q does not exist", cfg.Storage.Bucket)
 		}
+	}
+	required(cfg, "object-storage", storageErr)
+	if storageErr == nil {
+		snapshotRepo = infminio.NewSnapshotRepo(minioClient, cfg.Storage.Bucket)
 	} else {
-		log.Println("INFO: MinIO not configured — using in-memory snapshot store")
+		log.Printf("WARNING: object storage unavailable; using development memory snapshots: %v", storageErr)
 	}
 
-	// ---- NATS (optional — cross-node fan-out) ----
-	var pubsub *infnats.PubSub
 	var natsConn *natsgo.Conn
-	if cfg.NATS.URL != "" {
-		nc, err := natsgo.Connect(cfg.NATS.URL, natsgo.Token(cfg.NATS.Token), natsgo.RetryOnFailedConnect(true), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(2*time.Second))
-		if err != nil {
-			log.Printf("WARNING: NATS unavailable — cross-node sync disabled: %v", err)
-		} else {
-			natsConn = nc
-			pubsub = infnats.NewPubSub(nc)
-			log.Println("Connected to NATS (cross-node fan-out enabled)")
-		}
+	var pubsub *infnats.PubSub
+	natsConn, err = infnats.Connect(cfg.NATS.URL, cfg.NATS.Token)
+	required(cfg, "nats", err)
+	if err == nil {
+		defer natsConn.Drain()
+		pubsub = infnats.NewPubSub(natsConn)
 	} else {
-		log.Println("INFO: NATS not configured — single-node mode")
+		natsConn = nil
+		log.Printf("WARNING: NATS unavailable; cross-node sync disabled: %v", err)
 	}
 
-	// ---- Throttle ----
 	throttleSvc := throttle.NewThrottleService()
-	throttleCtx, cancelThrottle := context.WithCancel(context.Background())
+	throttleCtx, cancelThrottle := context.WithCancel(rootCtx)
 	defer cancelThrottle()
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
@@ -139,101 +119,95 @@ func main() {
 			}
 		}
 	}()
-
-	// ---- Hub (in-memory room manager) ----
-	hubOptions := make([]ws.HubOption, 0, 3)
+	opts := []ws.HubOption{}
 	if pubsub != nil {
-		hubOptions = append(hubOptions, ws.WithPubSub(pubsub))
+		opts = append(opts, ws.WithPubSub(pubsub))
 	}
 	if presenceRepo != nil {
-		hubOptions = append(hubOptions, ws.WithPresenceRepository(presenceRepo))
+		opts = append(opts, ws.WithPresenceRepository(presenceRepo))
 	}
 	if lockRepo != nil {
-		hubOptions = append(hubOptions, ws.WithLockRepository(lockRepo))
+		opts = append(opts, ws.WithLockRepository(lockRepo))
 	}
-	hub := ws.NewHub(snapshotRepo, hubOptions...)
-
-	// ---- WS Gateway ----
+	hub := ws.NewHub(snapshotRepo, opts...)
 	gateway := ws.NewGateway(hub, jwtSvc, permSvc, userRepo, throttleSvc)
-
-	// ---- HTTP Server ----
-	mux := http.NewServeMux()
-
-	// WebSocket endpoints. Notifications are user-scoped and separate from canvas collaboration.
 	notificationGateway := ws.NewNotificationGateway(jwtSvc, userRepo, natsConn)
 	defer notificationGateway.Close()
+	mux := http.NewServeMux()
 	mux.Handle("/ws/notifications", notificationGateway)
 	mux.Handle("/ws", gateway)
-
-	// Health check endpoint.
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		dbStatus := "ok"
-		if err := pool.Ping(r.Context()); err != nil {
-			dbStatus = "degraded"
-		}
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"status":"ok","rooms":%d,"connections":%d,"database":"%s"}`,
-			hub.ActiveRoomCount(), hub.ActiveConnectionCount(), dbStatus)
+		fmt.Fprintf(w, `{"status":"ok","rooms":%d,"connections":%d}`, hub.ActiveRoomCount(), hub.ActiveConnectionCount())
 	})
-
-	// Prometheus-style metrics endpoint.
+	mux.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		ready := pool.Ping(ctx) == nil && redisClient.Ping(ctx).Err() == nil && natsConn != nil && natsConn.IsConnected()
+		if minioClient == nil {
+			ready = false
+		} else {
+			exists, e := minioClient.BucketExists(ctx, cfg.Storage.Bucket)
+			ready = ready && e == nil && exists
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if !ready {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"status":"not ready"}`)
+			return
+		}
+		fmt.Fprint(w, `{"status":"ready"}`)
+	})
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-		fmt.Fprintf(w, "# HELP hubvas_ws_rooms_active Active rooms\n")
-		fmt.Fprintf(w, "# TYPE hubvas_ws_rooms_active gauge\n")
-		fmt.Fprintf(w, "hubvas_ws_rooms_active %d\n", hub.ActiveRoomCount())
-		fmt.Fprintf(w, "# HELP hubvas_ws_connections_active Active WebSocket connections\n")
-		fmt.Fprintf(w, "# TYPE hubvas_ws_connections_active gauge\n")
-		fmt.Fprintf(w, "hubvas_ws_connections_active %d\n", hub.ActiveConnectionCount())
+		fmt.Fprintf(w, "# HELP hubvas_ws_rooms_active Active rooms\n# TYPE hubvas_ws_rooms_active gauge\nhubvas_ws_rooms_active %d\n# HELP hubvas_ws_connections_active Active WebSocket connections\n# TYPE hubvas_ws_connections_active gauge\nhubvas_ws_connections_active %d\n", hub.ActiveRoomCount(), hub.ActiveConnectionCount())
 	})
-
 	addr := fmt.Sprintf("%s:%d", cfg.Server.WSHost, cfg.Server.WSPort)
-	srv := &http.Server{
-		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  cfg.Server.ReadTimeout,
-		WriteTimeout: cfg.Server.WriteTimeout,
-	}
-
+	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout, ReadTimeout: cfg.Server.ReadTimeout, WriteTimeout: cfg.Server.WriteTimeout, IdleTimeout: cfg.Server.IdleTimeout}
+	serverErr := make(chan error, 1)
 	go func() {
 		log.Printf("WS server listening on %s", addr)
-		if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-			log.Fatalf("WS server error: %v", err)
+		if e := srv.ListenAndServe(); e != nil && e != http.ErrServerClosed {
+			serverErr <- e
 		}
 	}()
-
-	// ---- Graceful Shutdown ----
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	sig := <-quit
-	log.Printf("Received signal %v, shutting down...", sig)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	select {
+	case sig := <-quit:
+		log.Printf("Received signal %v, shutting down...", sig)
+	case e := <-serverErr:
+		log.Printf("server error: %v", e)
+	}
+	cancelThrottle()
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
 	defer cancel()
-
-	srv.Shutdown(ctx)
+	_ = srv.Shutdown(ctx)
 	hub.Shutdown()
 	if pubsub != nil {
 		pubsub.Close()
 	}
-
 }
 
-// ---- In-memory fallback snapshot store ----
-
 type memorySnapshotRepo struct {
+	mu   sync.RWMutex
 	data map[int64][]byte
 }
 
-func (m *memorySnapshotRepo) Save(ctx context.Context, canvasID collaboration.RoomID, data []byte) error {
-	m.data[int64(canvasID)] = data
+func (m *memorySnapshotRepo) Save(_ context.Context, id collaboration.RoomID, data []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.data[int64(id)] = append([]byte(nil), data...)
 	return nil
 }
-func (m *memorySnapshotRepo) Load(ctx context.Context, canvasID collaboration.RoomID) ([]byte, error) {
-	return m.data[int64(canvasID)], nil
+func (m *memorySnapshotRepo) Load(_ context.Context, id collaboration.RoomID) ([]byte, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return append([]byte(nil), m.data[int64(id)]...), nil
 }
-func (m *memorySnapshotRepo) Delete(ctx context.Context, canvasID collaboration.RoomID) error {
-	delete(m.data, int64(canvasID))
+func (m *memorySnapshotRepo) Delete(_ context.Context, id collaboration.RoomID) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.data, int64(id))
 	return nil
 }

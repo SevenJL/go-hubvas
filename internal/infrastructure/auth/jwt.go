@@ -3,6 +3,7 @@ package auth
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strconv"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -10,101 +11,64 @@ import (
 	"github.com/hubvas/internal/domain/shared"
 )
 
-// JWTService implements application/auth.TokenService using HS256 JWTs.
 type JWTService struct {
-	accessSecret  []byte
-	refreshSecret []byte
-	accessTTL     time.Duration
-	refreshTTL    time.Duration
+	accessSecret []byte
+	accessTTL    time.Duration
+	issuer       string
+	audience     string
 }
 
-// NewJWTService creates a JWTService with the given secrets and TTLs.
-// If secrets are empty, random ones are generated (for development only).
-func NewJWTService(accessSecret, refreshSecret string, accessTTL, refreshTTL time.Duration) *JWTService {
+// NewJWTService remains source-compatible with existing callers. Refresh tokens
+// are now opaque, server-side sessions and the refresh secret is intentionally unused.
+func NewJWTService(accessSecret, _ string, accessTTL, _ time.Duration) *JWTService {
+	return NewJWTServiceWithClaims(accessSecret, accessTTL, "hubvas", "hubvas-web")
+}
+
+func NewJWTServiceWithClaims(accessSecret string, accessTTL time.Duration, issuer, audience string) *JWTService {
 	if accessSecret == "" {
 		accessSecret = randomHex(32)
 	}
-	if refreshSecret == "" {
-		refreshSecret = randomHex(32)
-	}
-	return &JWTService{
-		accessSecret:  []byte(accessSecret),
-		refreshSecret: []byte(refreshSecret),
-		accessTTL:     accessTTL,
-		refreshTTL:    refreshTTL,
-	}
+	return &JWTService{accessSecret: []byte(accessSecret), accessTTL: accessTTL, issuer: issuer, audience: audience}
 }
 
-// GenerateAccessToken creates a short-lived access token.
 func (s *JWTService) GenerateAccessToken(userID identity.UserID) (string, int64, error) {
-	now := time.Now()
+	now := time.Now().UTC()
 	expiresAt := now.Add(s.accessTTL)
-
-	claims := jwt.MapClaims{
-		"sub": userID,
-		"iat": now.Unix(),
-		"exp": expiresAt.Unix(),
+	claims := jwt.RegisteredClaims{
+		Issuer: s.issuer, Subject: strconv.FormatInt(int64(userID), 10), Audience: jwt.ClaimStrings{s.audience},
+		ExpiresAt: jwt.NewNumericDate(expiresAt), NotBefore: jwt.NewNumericDate(now), IssuedAt: jwt.NewNumericDate(now), ID: randomHex(16),
 	}
-
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	tokenStr, err := token.SignedString(s.accessSecret)
-	if err != nil {
-		return "", 0, err
-	}
-	return tokenStr, expiresAt.Unix(), nil
+	token.Header["typ"] = "at+jwt"
+	value, err := token.SignedString(s.accessSecret)
+	return value, expiresAt.Unix(), err
 }
 
-// GenerateRefreshToken creates a long-lived refresh token.
-func (s *JWTService) GenerateRefreshToken(userID identity.UserID) (string, error) {
-	now := time.Now()
-	expiresAt := now.Add(s.refreshTTL)
-
-	claims := jwt.MapClaims{
-		"sub": userID,
-		"iat": now.Unix(),
-		"exp": expiresAt.Unix(),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(s.refreshSecret)
-}
-
-// ValidateAccessToken verifies and extracts the user ID from an access token.
-func (s *JWTService) ValidateAccessToken(tokenString string) (identity.UserID, error) {
-	return s.validateToken(tokenString, s.accessSecret)
-}
-
-// ValidateRefreshToken verifies and extracts the user ID from a refresh token.
-func (s *JWTService) ValidateRefreshToken(tokenString string) (identity.UserID, error) {
-	return s.validateToken(tokenString, s.refreshSecret)
-}
-
-func (s *JWTService) validateToken(tokenString string, secret []byte) (identity.UserID, error) {
-	token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
+func (s *JWTService) ValidateAccessToken(value string) (identity.UserID, error) {
+	claims := &jwt.RegisteredClaims{}
+	token, err := jwt.ParseWithClaims(value, claims, func(t *jwt.Token) (interface{}, error) {
+		if t.Method != jwt.SigningMethodHS256 {
 			return nil, shared.NewDomainError(shared.ErrUnauthorized, "unexpected signing method")
 		}
-		return secret, nil
-	})
-	if err != nil {
-		return 0, shared.NewDomainError(shared.ErrUnauthorized, "invalid token: "+err.Error())
+		return s.accessSecret, nil
+	}, jwt.WithIssuer(s.issuer), jwt.WithAudience(s.audience), jwt.WithExpirationRequired(), jwt.WithIssuedAt())
+	if err != nil || !token.Valid {
+		return 0, shared.NewDomainError(shared.ErrUnauthorized, "invalid or expired token")
 	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok || !token.Valid {
-		return 0, shared.NewDomainError(shared.ErrUnauthorized, "invalid token claims")
+	if typ, _ := token.Header["typ"].(string); typ != "at+jwt" {
+		return 0, shared.NewDomainError(shared.ErrUnauthorized, "invalid token type")
 	}
-
-	sub, ok := claims["sub"].(float64)
-	if !ok {
-		return 0, shared.NewDomainError(shared.ErrUnauthorized, "missing subject claim")
+	id, err := strconv.ParseInt(claims.Subject, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, shared.NewDomainError(shared.ErrUnauthorized, "invalid token subject")
 	}
-
-	return identity.UserID(int64(sub)), nil
+	return identity.UserID(id), nil
 }
 
 func randomHex(n int) string {
 	b := make([]byte, n)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand unavailable: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }

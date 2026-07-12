@@ -12,6 +12,11 @@
 #     in production — it pulls prebuilt images and keeps ports internal.
 
 services:
+  migrate:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile.api
+
   api-server:
     build:
       context: ../..

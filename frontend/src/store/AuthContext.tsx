@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react';
 import type { User } from '../types';
 import { authService } from '../services/auth';
-import { clearTokens, getAccessToken } from '../services/api';
+import { clearTokens } from '../services/api';
 
 interface AuthState {
   /** The currently authenticated user, or null if not logged in. */
@@ -24,14 +24,11 @@ const AuthContext = createContext<AuthState | null>(null);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(() => Boolean(getAccessToken()));
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   // On mount, check if there's a stored token and validate it.
   useEffect(() => {
-    const token = getAccessToken();
-    if (!token) return;
-
     let cancelled = false;
 
     authService.me()
@@ -65,6 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(() => {
+    void authService.logout();
     clearTokens();
     setUser(null);
     setError(null);

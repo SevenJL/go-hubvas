@@ -59,11 +59,11 @@ docker-build:
 
 ## docker-up: Start services with Docker Compose (dev — build from source + port overrides)
 docker-up:
-	docker compose -f deployments/docker/docker-compose.yaml -f deployments/docker/docker-compose.override.yml up -d --build
+	docker compose --env-file deployments/docker/.env.dev -f deployments/docker/docker-compose.yaml -f deployments/docker/docker-compose.override.yml up -d --build
 
 ## docker-down: Stop Docker Compose services
 docker-down:
-	docker compose -f deployments/docker/docker-compose.yaml -f deployments/docker/docker-compose.override.yml down
+	docker compose --env-file deployments/docker/.env.dev -f deployments/docker/docker-compose.yaml -f deployments/docker/docker-compose.override.yml down
 
 ## tidy: Tidy Go modules
 tidy:

@@ -76,9 +76,9 @@ export function useYjsProvider({
   const connect = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.host;
-    const url = `${protocol}//${host}/ws?canvas=${canvasId}&token=${token}`;
+    const url = `${protocol}//${host}/ws?canvas=${canvasId}`;
 
-    const ws = new WebSocket(url);
+    const ws = new WebSocket(url, ['hubvas', `hubvas.access.${token}`]);
     wsRef.current = ws;
     ws.binaryType = 'arraybuffer';
 

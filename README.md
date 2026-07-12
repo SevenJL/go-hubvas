@@ -28,7 +28,7 @@ Hubvas 是一个面向多人实时协作场景的在线画布平台。用户可�
 
 ### 社区与账户
 
-- 注册、登录、JWT 刷新和个人资料维护
+- 注册、登录、短期 Access JWT、HttpOnly 轮换刷新会话、登出和个人资料维护
 - 社区作品分页、标签筛选、最新 / 热门 / 趋势排序
 - 发布、点赞、取消点赞、评论和 Fork
 - 作者信息、当前用户点赞状态与 Fork 计数
@@ -94,6 +94,7 @@ infrastructure/   → PostgreSQL、Redis、NATS、MinIO、JWT 等实现
 go-hubvas/
 ├── cmd/
 │   ├── api-server/                       # REST API，默认 :8080
+│   ├── migrate/                          # 带锁、版本和校验和的数据库迁移器
 │   └── ws-server/                        # WebSocket，默认 :8081
 ├── frontend/                             # React + TypeScript + tldraw + Yjs
 ├── internal/
@@ -152,7 +153,7 @@ docker compose -f deployments/docker/docker-compose.yaml \
 make docker-down
 ```
 
-可通过 `WEB_HOST_PORT`、`DB_PASSWORD`、`JWT_ACCESS_SECRET`、`JWT_REFRESH_SECRET` 等环境变量覆盖默认值。生产环境必须替换 JWT 与存储密钥。
+开发模式固定读取 `deployments/docker/.env.dev`。生产部署应复制 `deployments/docker/.env.example` 为受保护的 `.env`，填写不可变 `IMAGE_TAG`、数据库/Redis/NATS/对象存储凭据以及至少 32 字符的 `JWT_ACCESS_SECRET`。生产配置缺失或仍使用开发凭据时，API 与 WS 会直接拒绝启动。
 
 ### 方式二：本地开发
 
@@ -171,19 +172,16 @@ cd frontend && npm install && cd ..
 # 创建数据库
 psql -U postgres -c "CREATE DATABASE hubvas"
 
-# 执行全部迁移
-for migration in internal/infrastructure/persistence/postgres/migrations/*.sql; do
-  psql -U postgres -d hubvas -f "$migration"
-done
-
-# API 与 WS 必须使用相同的 JWT secrets
+# API 与 WS 必须使用相同的 Access JWT 配置
 export DB_HOST=localhost
 export DB_PORT=5432
 export DB_USER=postgres
 export DB_PASSWORD=postgres
 export DB_NAME=hubvas
-export JWT_ACCESS_SECRET=dev-access-secret-change-in-production
-export JWT_REFRESH_SECRET=dev-refresh-secret-change-in-production
+export JWT_ACCESS_SECRET=dev-access-secret
+
+# 使用版本化迁移器；可重复运行，并通过 advisory lock 防止多实例并发迁移
+go run ./cmd/migrate
 ```
 
 分别启动三个开发进程：
@@ -267,13 +265,13 @@ make docker-down
 
 ## WebSocket 协作
 
-连接地址：
+连接地址只包含非敏感画布参数：
 
 ```text
-/ws?canvas=<canvas_id>&token=<jwt>
+/ws?canvas=<canvas_id>
 ```
 
-服务端在升级连接前会验证 JWT、用户身份、画布访问权限及编辑角色。Viewer 可以接收同步和 Presence，但服务端会拒绝其编辑、锁定等写操作。
+浏览器通过 `Sec-WebSocket-Protocol` 提交 Access JWT，当前协议为固定的 `hubvas` 加 `hubvas.access.<jwt>` 凭据项；服务端只回显固定协议名，不在 URL、访问日志或选中的子协议中回显令牌。服务端在升级连接前会验证 JWT、用户身份、画布访问权限及编辑角色。Viewer 可以接收同步和 Presence，但服务端会拒绝其编辑、锁定等写操作。
 
 消息信封：
 
@@ -287,7 +285,7 @@ make docker-down
 
 主要同步流程：
 
-1. 客户端携带 JWT 与画布 ID 建立连接。
+1. 客户端通过 WebSocket 子协议携带 JWT，并使用画布 ID 建立连接。
 2. 服务端校验身份和权限，将用户加入 Room。
 3. 冷房间从持久化快照恢复；客户端接收完整状态及在线成员。
 4. 绘制过程中仅广播 Yjs 增量更新、Awareness 与锁状态。
@@ -338,10 +336,6 @@ cd frontend && npm run test && npm run test:e2e && npm run lint && npm run build
 
 更多协作设计说明见 `docs/协作画布开发文档.md`。
 
-## License
-
-MIT
-
 ## 生产级社交基础能力
 
 当前版本已经将原有演示级社区功能扩展为可持久化、可审核、可恢复投递的社交基础版：
@@ -351,7 +345,7 @@ MIT
 - 社交图谱：关注/取消关注、粉丝与关注列表、关注内容流、双向拉黑隔离。
 - 讨论：一级评论线程、回复、作者软删除、被删除/隐藏占位和拉黑过滤。
 - 治理：用户/画布/评论举报去重，管理员审核队列、暂停/恢复用户、隐藏/恢复评论和取消/恢复发布画布。
-- 通知：关注、点赞、评论、回复和 Fork 的持久化站内通知；数据库事务 outbox、NATS 重试分发和 `/ws/notifications?token=...` 实时推送。客户端重连后仍以 REST 列表和未读数为准补偿。
+- 通知：关注、点赞、评论、回复和 Fork 的持久化站内通知；数据库事务 outbox、NATS 重试分发和 `/ws/notifications` 用户级实时推送。客户端重连后仍以 REST 列表和未读数为准补偿。
 - 可靠性：领域错误统一映射到 400/401/403/404/409/429；登录、头像、关注、评论、举报和管理员操作使用独立限流器。
 
 ### 头像对象存储配置
@@ -394,7 +388,7 @@ WHERE username = 'admin_username';
 - `GET /api/notifications`、`GET /api/notifications/unread-count`、通知已读接口
 - `POST|DELETE /api/users/:id/block`、`GET /api/blocks`
 - `POST /api/reports` 与 `/api/admin/reports`、用户/评论/画布审核接口
-- `GET /ws/notifications?token=...`
+- `GET /ws/notifications`（JWT 通过 WebSocket 子协议传输）
 
 ### 测试与验收
 
@@ -411,6 +405,21 @@ npm run lint
 npm run build
 ```
 
-数据库迁移应在空 PostgreSQL 15+ 实例上按文件名顺序执行。对象存储验收需要同时验证预签名 PUT 和 multipart 两条链路最终都生成 WebP，并确认替换/删除头像后旧对象被清理。
+数据库迁移统一通过 `go run ./cmd/migrate` 或 Compose 的 `migrate` 服务执行；迁移器使用 PostgreSQL advisory lock、事务、版本记录和 SHA-256 校验和，并可安全重复运行。对象存储验收需要同时验证预签名 PUT 和 multipart 两条链路最终都生成 WebP，并确认替换/删除头像后旧对象被清理。
 
-> 当前 HTTP 细粒度限流器为单实例内存 Token Bucket，并带空闲 key 回收，适合单副本或入口层已统一限流的部署。多 API 副本生产环境应在网关实施全局限流，或将该接口替换为 Redis/Lua 原子限流器，不能把单进程额度当作集群级额度。
+> 生产环境的 HTTP 全局与细粒度限流使用 Redis/Lua 原子 Token Bucket，可在多个 API 副本间共享额度；开发环境仅在 Redis 不可用时回退到带空闲 key 回收的进程内限流。生产启动会要求 PostgreSQL、Redis、NATS 和对象存储均可用。
+
+## 生产部署安全基线
+
+- Access JWT 包含 issuer、audience、subject、`jti`、`iat`、`nbf`、`exp` 和 `typ=at+jwt`，并严格限制 HS256。
+- Refresh Token 是 32 字节随机不透明凭据，仅将 SHA-256 哈希保存在 PostgreSQL；每次刷新都会轮换，检测到旧令牌复用时撤销整个会话族。
+- Refresh Token 只写入 `HttpOnly` Cookie；前端不再将认证令牌保存到 localStorage，并对并发 401 只发起一次刷新请求。
+- `/health` 仅表示进程存活，`/ready` 检查 PostgreSQL、Redis、NATS 和对象存储；容器编排仅把 readiness 成功的实例加入服务。
+- API/WS 使用读头、读写、空闲和优雅关闭超时；运行镜像使用非 root 用户。
+- `TRUSTED_PROXIES` 必须与实际反向代理网段一致，否则客户端 IP、审计信息和按 IP 限流可能不准确。
+- 生产 Compose 强制指定不可变 `IMAGE_TAG`，禁止默默回退到 `latest`。
+- PostgreSQL 与对象存储备份、校验和验证及恢复步骤见 `deployments/backup/README.md`。
+
+## License
+
+MIT

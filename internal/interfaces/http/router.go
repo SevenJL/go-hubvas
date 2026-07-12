@@ -20,17 +20,21 @@ type RouterConfig struct {
 	TokenSvc         middleware.TokenValidator
 	RateLimiter      *middleware.RateLimiter
 	UserLookup       middleware.AccountLookup
+	TrustedProxies   []string
 }
 
 // NewRouter creates and configures the Gin router with all routes.
 func NewRouter(cfg RouterConfig) *gin.Engine {
 	r := gin.New()
-	loginLimit := middleware.NewRateLimiter(0.2, 8)
-	uploadLimit := middleware.NewRateLimiter(0.1, 5)
-	followLimit := middleware.NewRateLimiter(0.5, 12)
-	commentLimit := middleware.NewRateLimiter(0.25, 8)
-	reportLimit := middleware.NewRateLimiter(0.05, 3)
-	adminLimit := middleware.NewRateLimiter(0.5, 10)
+	if err := r.SetTrustedProxies(cfg.TrustedProxies); err != nil {
+		panic("invalid trusted proxy configuration: " + err.Error())
+	}
+	loginLimit := cfg.RateLimiter.Scoped(0.2, 8)
+	uploadLimit := cfg.RateLimiter.Scoped(0.1, 5)
+	followLimit := cfg.RateLimiter.Scoped(0.5, 12)
+	commentLimit := cfg.RateLimiter.Scoped(0.25, 8)
+	reportLimit := cfg.RateLimiter.Scoped(0.05, 3)
+	adminLimit := cfg.RateLimiter.Scoped(0.5, 10)
 
 	// Global middleware.
 	r.Use(middleware.Recovery())
@@ -47,7 +51,8 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	{
 		auth.POST("/register", loginLimit.KeyedMiddleware("register", false), cfg.AuthHandler.Register)
 		auth.POST("/login", loginLimit.KeyedMiddleware("login", false), cfg.AuthHandler.Login)
-		auth.POST("/refresh", cfg.AuthHandler.Refresh)
+		auth.POST("/refresh", loginLimit.KeyedMiddleware("refresh", false), cfg.AuthHandler.Refresh)
+		auth.POST("/logout", cfg.AuthHandler.Logout)
 	}
 
 	// Public user profiles and community read access.
@@ -75,6 +80,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	{
 		// Auth and profile media
 		api.GET("/auth/me", cfg.AuthHandler.Me)
+		api.POST("/auth/logout-all", cfg.AuthHandler.LogoutAll)
 		api.PUT("/auth/profile", cfg.AuthHandler.UpdateProfile)
 		api.PATCH("/auth/profile", cfg.AuthHandler.UpdateProfile)
 		api.DELETE("/auth/avatar", cfg.MediaHandler.Remove)
@@ -123,7 +129,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		api.PUT("/canvases/:id/snapshot", cfg.SnapshotHandler.Save)
 	}
 
-	// WebSocket (JWT via query param, verified in the gateway).
+	// WebSocket (JWT via Sec-WebSocket-Protocol, verified in the gateway).
 	// The API-only process intentionally leaves WSGateway nil.
 	if cfg.WSGateway != nil {
 		r.GET("/ws", func(c *gin.Context) {

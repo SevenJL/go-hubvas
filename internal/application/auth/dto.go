@@ -17,13 +17,13 @@ type LoginRequest struct {
 
 // RefreshRequest is the input DTO for refreshing tokens.
 type RefreshRequest struct {
-	RefreshToken string `json:"refresh_token" binding:"required"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 // TokenResponse is the output DTO containing JWT tokens.
 type TokenResponse struct {
 	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
+	RefreshToken string `json:"-"`
 	ExpiresAt    int64  `json:"expires_at"`
 	TokenType    string `json:"token_type"` // "Bearer"
 }

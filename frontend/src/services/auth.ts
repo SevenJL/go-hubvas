@@ -1,4 +1,4 @@
-import { api, setTokens } from './api';
+import { api, clearTokens, setTokens } from './api';
 import type { User, TokenResponse, RegisterResponse } from '../types';
 
 export interface RegisterInput {
@@ -24,7 +24,7 @@ export const authService = {
     }
     // Auto-save the tokens so the user is immediately authenticated.
     if (res.data.tokens) {
-      setTokens(res.data.tokens.access_token, res.data.tokens.refresh_token);
+      setTokens(res.data.tokens.access_token);
     }
     return res.data;
   },
@@ -35,8 +35,12 @@ export const authService = {
     if (res.code !== 0 || !res.data) {
       throw new Error(res.message || 'Invalid email or password');
     }
-    setTokens(res.data.access_token, res.data.refresh_token);
+    setTokens(res.data.access_token);
     return res.data;
+  },
+
+  async logout(): Promise<void> {
+    try { await api.post('/auth/logout'); } finally { clearTokens(); }
   },
 
   /** Get the currently authenticated user. */

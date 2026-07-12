@@ -4,7 +4,7 @@ export interface User {
   id: string; username: string; email: string; display_name: string; bio: string; website: string;
   avatar_url: string; account_role: 'user' | 'admin'; status: 'active' | 'suspended'; created_at: string; updated_at: string;
 }
-export interface TokenResponse { access_token: string; refresh_token: string; expires_at: number; token_type: string }
+export interface TokenResponse { access_token: string; expires_at: number; token_type: string }
 export interface RegisterResponse { user: User; tokens: TokenResponse }
 
 export interface CanvasInfo { id: string; owner_id: string; title: string; visibility: 'private' | 'published'; forked_from?: string; member_count: number; online_count: number; current_role?: 'owner' | 'editor' | 'viewer' | 'commenter'; created_at: string; updated_at: string }

@@ -28,7 +28,7 @@ export function useNotifications(enabled: boolean) {
       const token = getAccessToken();
       if (!token || closed) return;
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${location.host}/ws/notifications?token=${encodeURIComponent(token)}`);
+      ws = new WebSocket(`${protocol}//${location.host}/ws/notifications`, ['hubvas', `hubvas.access.${token}`]);
       ws.onopen = () => {
         retry.current = 0;
         void sync();
@@ -38,6 +38,7 @@ export function useNotifications(enabled: boolean) {
           const message = JSON.parse(event.data);
           if (message.type === 'notification.created') {
             setUnread(count => count + 1);
+            void sync();
             window.dispatchEvent(new CustomEvent('hubvas:notification', { detail: message.payload }));
           }
         } catch {

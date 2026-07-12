@@ -14,7 +14,7 @@ import (
 
 // Gateway handles WebSocket upgrade requests and creates Client instances.
 //
-// Connection URL: wss://host/ws?canvas=<canvasID>&token=<jwt>
+// Connection URL: wss://host/ws?canvas=<canvasID> (JWT via Sec-WebSocket-Protocol)
 //
 // Flow:
 //  1. Upgrade HTTP to WebSocket
@@ -73,13 +73,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 2. Extract and validate JWT.
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		// Also check Authorization header.
-		if auth := r.Header.Get("Authorization"); len(auth) > 7 && auth[:7] == "Bearer " {
-			token = auth[7:]
-		}
-	}
+	token, selectedProtocol := accessTokenFromRequest(r)
 	if token == "" {
 		http.Error(w, `{"code":"missing_token","message":"token is required"}`, http.StatusUnauthorized)
 		return
@@ -129,9 +123,11 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Upgrade to WebSocket.
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		InsecureSkipVerify: false,
-	})
+	options := &websocket.AcceptOptions{InsecureSkipVerify: false}
+	if selectedProtocol != "" {
+		options.Subprotocols = []string{selectedProtocol}
+	}
+	conn, err := websocket.Accept(w, r, options)
 	if err != nil {
 		log.Printf("[ws] upgrade failed: %v", err)
 		return

@@ -59,12 +59,7 @@ func (g *NotificationGateway) Close() {
 }
 
 func (g *NotificationGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
-	if token == "" {
-		if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-			token = strings.TrimPrefix(auth, "Bearer ")
-		}
-	}
+	token, selectedProtocol := accessTokenFromRequest(r)
 	if token == "" {
 		http.Error(w, `{"code":"missing_token","message":"token is required"}`, http.StatusUnauthorized)
 		return
@@ -83,16 +78,45 @@ func (g *NotificationGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"code":"suspended","message":"account is suspended"}`, http.StatusForbidden)
 		return
 	}
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: false})
+	options := &websocket.AcceptOptions{InsecureSkipVerify: false}
+	if selectedProtocol != "" {
+		options.Subprotocols = []string{selectedProtocol}
+	}
+	conn, err := websocket.Accept(w, r, options)
 	if err != nil {
 		return
 	}
+	conn.SetReadLimit(1024)
 	client := &notificationClient{conn: conn}
 	g.add(userID, client)
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(r.Context())
+	defer cancelHeartbeat()
+	go g.heartbeat(heartbeatCtx, client)
 	defer func() { g.remove(userID, client); conn.Close(websocket.StatusNormalClosure, "") }()
 	for {
 		if _, _, err := conn.Read(r.Context()); err != nil {
 			return
+		}
+	}
+}
+
+func (g *NotificationGateway) heartbeat(ctx context.Context, client *notificationClient) {
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			client.mu.Lock()
+			err := client.conn.Ping(pingCtx)
+			client.mu.Unlock()
+			cancel()
+			if err != nil {
+				_ = client.conn.Close(websocket.StatusGoingAway, "heartbeat failed")
+				return
+			}
 		}
 	}
 }

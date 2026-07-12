@@ -1,13 +1,15 @@
-# Hubvas Configuration — Default Values
-# Override with environment variables in production.
-
+environment: development
 server:
   api_host: "0.0.0.0"
   api_port: 8080
   ws_host: "0.0.0.0"
   ws_port: 8081
+  read_header_timeout: 5s
   read_timeout: 30s
   write_timeout: 30s
+  idle_timeout: 2m
+  shutdown_timeout: 15s
+  trusted_proxies: ["127.0.0.1/8", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 
 database:
   host: "localhost"
@@ -17,6 +19,10 @@ database:
   dbname: "hubvas"
   sslmode: "disable"
   max_conns: 20
+  min_conns: 2
+  max_conn_lifetime: 1h
+  max_conn_idle_time: 30m
+  health_check_period: 1m
 
 redis:
   addr: "localhost:6379"
@@ -33,19 +39,32 @@ storage:
   access_key: "minioadmin"
   secret_key: "minioadmin"
   bucket: "hubvas-snapshots"
+  media_bucket: "hubvas-media"
+  public_base_url: "/media"
+  presign_ttl: 15m
+  avatar_max_bytes: 5242880
   use_ssl: false
 
 auth:
   access_token_ttl: 15m
-  refresh_token_ttl: 720h  # 30 days
+  refresh_token_ttl: 720h
   access_secret: ""
   refresh_secret: ""
+  issuer: "hubvas"
+  audience: "hubvas-web"
   bcrypt_cost: 12
+  cookie_name: "hubvas_refresh"
+  cookie_domain: ""
+  cookie_secure: false
+  cookie_same_site: "strict"
+
+id:
+  node_id: 1
 
 ws:
   idle_timeout: 5m
   gc_interval: 1m
   snapshot_interval: 30s
-  max_message_size: 524288    # 512 KB
+  max_message_size: 524288
   send_buffer_size: 256
   inbound_queue_size: 1024

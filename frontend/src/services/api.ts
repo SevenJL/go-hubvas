@@ -1,27 +1,28 @@
 import type { ApiResponse } from '../types';
 const BASE_URL = '/api';
-let accessToken: string | null = localStorage.getItem('access_token');
-let refreshToken: string | null = localStorage.getItem('refresh_token');
-export function setTokens(access: string, refresh: string) { accessToken = access; refreshToken = refresh; localStorage.setItem('access_token', access); localStorage.setItem('refresh_token', refresh) }
-export function clearTokens() { accessToken = null; refreshToken = null; localStorage.removeItem('access_token'); localStorage.removeItem('refresh_token') }
+let accessToken: string | null = null;
+// Remove credentials written by older builds. Refresh sessions now live only in an HttpOnly cookie.
+localStorage.removeItem('access_token');
+localStorage.removeItem('refresh_token');
+export function setTokens(access: string, legacyRefresh?: string) { accessToken = access; void legacyRefresh }
+export function clearTokens() { accessToken = null; localStorage.removeItem('access_token'); localStorage.removeItem('refresh_token') }
 export function getAccessToken() { return accessToken }
 let refreshPromise: Promise<boolean> | null = null;
 async function tryRefreshToken() {
-  if (!refreshToken) return false;
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => { try {
-    const res = await fetch(`${BASE_URL}/auth/refresh`, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({refresh_token:refreshToken}) });
-    const body: ApiResponse<{access_token:string;refresh_token:string}> = await res.json();
+    const res = await fetch(`${BASE_URL}/auth/refresh`, { method:'POST', credentials:'same-origin' });
+    const body: ApiResponse<{access_token:string}> = await res.json();
     if (!res.ok || body.code !== 0 || !body.data) { clearTokens(); return false }
-    setTokens(body.data.access_token, body.data.refresh_token); return true;
+    setTokens(body.data.access_token); return true;
   } catch { return false } finally { refreshPromise = null } })();
   return refreshPromise;
 }
 async function perform(path: string, init: RequestInit, retry = true): Promise<Response> {
   const headers = new Headers(init.headers);
   if (accessToken) headers.set('Authorization', `Bearer ${accessToken}`);
-  const res = await fetch(path.startsWith('http') ? path : `${BASE_URL}${path}`, {...init, headers});
-  if (res.status === 401 && retry && refreshToken && await tryRefreshToken()) return perform(path, init, false);
+  const res = await fetch(path.startsWith('http') ? path : `${BASE_URL}${path}`, {...init, headers, credentials:'same-origin'});
+  if (res.status === 401 && retry && !path.endsWith('/auth/refresh') && await tryRefreshToken()) return perform(path, init, false);
   return res;
 }
 async function request<T>(method:string,path:string,body?:unknown): Promise<ApiResponse<T>> {

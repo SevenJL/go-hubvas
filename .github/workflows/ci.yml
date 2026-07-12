@@ -31,6 +31,19 @@ jobs:
   test:
     name: Lint & Test
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15.10-alpine
+        env:
+          POSTGRES_USER: hubvas
+          POSTGRES_PASSWORD: ci-password
+          POSTGRES_DB: hubvas
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U hubvas"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
 
@@ -50,15 +63,43 @@ jobs:
       - run: |
           go build ./cmd/api-server
           go build ./cmd/ws-server
+          go build ./cmd/migrate
+      - name: Verify migrations are repeatable
+        env:
+          APP_ENV: test
+          DB_HOST: localhost
+          DB_PORT: "5432"
+          DB_USER: hubvas
+          DB_PASSWORD: ci-password
+          DB_NAME: hubvas
+        run: |
+          go run ./cmd/migrate
+          go run ./cmd/migrate
       - run: go test -race -count=1 ./...
 
       - name: Frontend — install
         working-directory: frontend
         run: npm ci
 
+      - name: Frontend — lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: Frontend — unit tests
+        working-directory: frontend
+        run: npm test
+
       - name: Frontend — build
         working-directory: frontend
         run: npm run build
+
+      - name: Frontend — install Playwright Chromium
+        working-directory: frontend
+        run: npx playwright install --with-deps chromium
+
+      - name: Frontend — browser tests
+        working-directory: frontend
+        run: npm run test:e2e
 
   # ---------------------------------------------------------------------------
   # 2. Build & push images to GHCR (main only). Three images in parallel.
