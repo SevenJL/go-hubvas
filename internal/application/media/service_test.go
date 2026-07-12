@@ -8,6 +8,7 @@ import (
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"mime/multipart"
@@ -139,6 +140,38 @@ func pngWithDeclaredDimensions(t *testing.T, width, height uint32) []byte {
 	return data
 }
 
+func jpegWithOrientation(t *testing.T, width, height, orientation int) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, width, height))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			img.Set(x, y, color.NRGBA{R: uint8(x * 10), G: uint8(y * 10), B: 120, A: 255})
+		}
+	}
+	var encoded bytes.Buffer
+	if err := jpeg.Encode(&encoded, img, &jpeg.Options{Quality: 90}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Minimal big-endian TIFF payload containing one Orientation SHORT entry.
+	tiff := make([]byte, 26)
+	copy(tiff[0:2], "MM")
+	binary.BigEndian.PutUint16(tiff[2:4], 42)
+	binary.BigEndian.PutUint32(tiff[4:8], 8)
+	binary.BigEndian.PutUint16(tiff[8:10], 1)
+	binary.BigEndian.PutUint16(tiff[10:12], 0x0112)
+	binary.BigEndian.PutUint16(tiff[12:14], 3)
+	binary.BigEndian.PutUint32(tiff[14:18], 1)
+	binary.BigEndian.PutUint16(tiff[18:20], uint16(orientation))
+	payload := append([]byte("Exif\x00\x00"), tiff...)
+	segment := []byte{0xff, 0xe1, byte((len(payload) + 2) >> 8), byte(len(payload) + 2)}
+	segment = append(segment, payload...)
+	jpegData := encoded.Bytes()
+	result := append([]byte(nil), jpegData[:2]...)
+	result = append(result, segment...)
+	return append(result, jpegData[2:]...)
+}
+
 func prepareUpload(repo *memoryMediaRepo, store *memoryMediaStore, user identity.UserID, data []byte, state string, expiry time.Time) Upload {
 	upload := Upload{ID: "upload-1", UserID: user, TempKey: "tmp/avatars/1/upload-1", ContentType: "image/png", ExpectedSize: int64(len(data)), State: state, ExpiresAt: expiry}
 	repo.uploads[upload.ID] = upload
@@ -167,6 +200,27 @@ func TestCompleteRejectsSpoofedImageAndInvalidCrop(t *testing.T) {
 	_, err = svc.Complete(ctx, 1, CompleteRequest{UploadID: "upload-1", Crop: &Crop{X: 0, Y: 0, Width: .4, Height: .75}})
 	if !errors.Is(err, shared.ErrInvalidArgument) {
 		t.Fatalf("expected non-square crop error, got %v", err)
+	}
+}
+
+func TestCompleteAppliesJPEGEXIFOrientationBeforeCrop(t *testing.T) {
+	repo := newMemoryMediaRepo()
+	store := newMemoryMediaStore()
+	svc := NewService(repo, store, time.Minute, 5<<20)
+	// Stored pixels are 12x8, but Orientation=6 makes the browser preview 8x12.
+	// The browser therefore sends a full-width crop whose normalized height is
+	// 8/12. Applying that crop to the unrotated matrix would be non-square.
+	data := jpegWithOrientation(t, 12, 8, 6)
+	prepareUpload(repo, store, 1, data, "pending", time.Now().Add(time.Minute))
+	result, err := svc.Complete(context.Background(), 1, CompleteRequest{
+		UploadID: "upload-1",
+		Crop:     &Crop{X: 0, Y: 0.2, Width: 1, Height: 8.0 / 12.0},
+	})
+	if err != nil {
+		t.Fatalf("EXIF-oriented browser crop should succeed: %v", err)
+	}
+	if !strings.HasSuffix(result.AvatarURL, ".webp") {
+		t.Fatalf("expected processed WebP avatar, got %q", result.AvatarURL)
 	}
 }
 

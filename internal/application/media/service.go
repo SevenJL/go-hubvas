@@ -172,6 +172,7 @@ func (s *Service) Complete(ctx context.Context, user identity.UserID, in Complet
 	if err != nil || decodedFormat != format {
 		return nil, shared.NewDomainError(shared.ErrInvalidArgument, "avatar is not a valid image")
 	}
+	img = normalizeImageOrientation(raw, format, img)
 	b := img.Bounds()
 	if in.Crop != nil && !validCrop(in.Crop) {
 		return nil, shared.NewDomainError(shared.ErrInvalidArgument, "invalid avatar crop")

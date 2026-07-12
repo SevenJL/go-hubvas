@@ -1,5 +1,15 @@
-import { Link, useNavigate } from 'react-router-dom';
-import { Bell, Globe, LayoutDashboard, LogOut, Palette, Shield } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import {
+  Bell,
+  ChevronDown,
+  Globe,
+  LayoutDashboard,
+  LogOut,
+  Palette,
+  Shield,
+  UserRound,
+} from 'lucide-react';
 import { useAuth } from '../../store/AuthContext';
 import { LanguageToggle } from '../ui';
 import { Avatar } from '../ui/Avatar';
@@ -9,34 +19,166 @@ import { useI18n } from '../../i18n';
 export function Layout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const { unread } = useNotifications(Boolean(user));
   const { t } = useI18n();
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setAccountMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      if (!accountMenuRef.current?.contains(event.target as Node)) {
+        setAccountMenuOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAccountMenuOpen(false);
+    };
+
+    document.addEventListener('pointerdown', closeOnOutsidePointer);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [accountMenuOpen]);
+
+  const signOut = () => {
+    setAccountMenuOpen(false);
+    logout();
+    navigate('/login');
+  };
+
+  const accountName = user?.display_name || user?.username || '';
+
   return (
     <div className="min-h-screen bg-slate-50">
       <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4">
-          <Link to="/" className="flex items-center gap-2 text-lg font-bold text-slate-950">
-            <span className="grid h-9 w-9 place-items-center rounded-xl bg-indigo-600 text-white"><Palette size={20} /></span>Hubvas
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-2 px-2.5 sm:px-4">
+          <Link to="/" className="flex min-w-0 shrink-0 items-center gap-2 text-lg font-bold text-slate-950">
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-indigo-600 text-white">
+              <Palette size={20} />
+            </span>
+            <span className="max-[389px]:hidden">Hubvas</span>
           </Link>
-          <nav className="flex items-center gap-1">
-            <Link to="/dashboard" className="nav-link"><LayoutDashboard size={17} /><span className="hidden md:inline">{t('Dashboard')}</span></Link>
-            <Link to="/community" className="nav-link"><Globe size={17} /><span className="hidden md:inline">{t('Community')}</span></Link>
-            {user && <>
-              <Link to="/notifications" className="relative nav-link" aria-label={t('Notifications')} title={t('Notifications')}>
-                <Bell size={18} />
-                {unread > 0 && <span className="absolute right-0 top-0 min-w-4 rounded-full bg-rose-500 px-1 text-center text-[10px] font-bold text-white">{unread > 99 ? '99+' : unread}</span>}
+
+          <nav className="flex min-w-0 items-center gap-0.5 sm:gap-1" aria-label="Primary navigation">
+            <Link to="/dashboard" className="nav-link" aria-label={t('Dashboard')} title={t('Dashboard')}>
+              <LayoutDashboard size={17} />
+              <span className="hidden lg:inline">{t('Dashboard')}</span>
+            </Link>
+            <Link to="/community" className="nav-link" aria-label={t('Community')} title={t('Community')}>
+              <Globe size={17} />
+              <span className="hidden lg:inline">{t('Community')}</span>
+            </Link>
+
+            {user && (
+              <>
+                <Link
+                  to="/notifications"
+                  className="relative nav-link"
+                  aria-label={t('Notifications')}
+                  title={t('Notifications')}
+                >
+                  <Bell size={18} />
+                  {unread > 0 && (
+                    <span className="absolute right-0 top-0 min-w-4 rounded-full bg-rose-500 px-1 text-center text-[10px] font-bold leading-4 text-white">
+                      {unread > 99 ? '99+' : unread}
+                    </span>
+                  )}
+                </Link>
+                {user.account_role === 'admin' && (
+                  <Link to="/admin" className="nav-link hidden sm:flex" title={t('Moderation')} aria-label={t('Moderation')}>
+                    <Shield size={17} />
+                  </Link>
+                )}
+              </>
+            )}
+
+            <LanguageToggle compact className="sm:hidden" />
+            <LanguageToggle className="hidden sm:flex" />
+
+            {user ? (
+              <div ref={accountMenuRef} className="relative ml-0.5 sm:ml-1">
+                <button
+                  type="button"
+                  onClick={() => setAccountMenuOpen(open => !open)}
+                  className="flex max-w-[12rem] items-center gap-2 rounded-xl p-1.5 text-left transition-colors hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 sm:px-2"
+                  aria-label={t('Profile settings')}
+                  aria-haspopup="menu"
+                  aria-expanded={accountMenuOpen}
+                >
+                  <Avatar size="sm" name={accountName} src={user.avatar_url} />
+                  <span className="hidden min-w-0 sm:block">
+                    <span className="block truncate text-sm font-semibold text-slate-800">{accountName}</span>
+                    <span className="block truncate text-xs text-slate-500">@{user.username}</span>
+                  </span>
+                  <ChevronDown
+                    size={15}
+                    className={`hidden shrink-0 text-slate-400 transition-transform sm:block ${accountMenuOpen ? 'rotate-180' : ''}`}
+                  />
+                </button>
+
+                {accountMenuOpen && (
+                  <div
+                    role="menu"
+                    aria-label={t('Profile')}
+                    className="absolute right-0 top-[calc(100%+0.65rem)] w-[min(18rem,calc(100vw-1rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl shadow-slate-900/10"
+                  >
+                    <div className="flex items-center gap-3 border-b border-slate-100 px-3 py-3">
+                      <Avatar size="md" name={accountName} src={user.avatar_url} />
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-900">{accountName}</p>
+                        <p className="truncate text-xs text-slate-500">{user.email}</p>
+                      </div>
+                    </div>
+
+                    <div className="py-1">
+                      <Link
+                        to="/profile"
+                        role="menuitem"
+                        className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-950"
+                      >
+                        <UserRound size={17} className="text-slate-400" />
+                        {t('Profile settings')}
+                      </Link>
+                      {user.account_role === 'admin' && (
+                        <Link
+                          to="/admin"
+                          role="menuitem"
+                          className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-950 sm:hidden"
+                        >
+                          <Shield size={17} className="text-slate-400" />
+                          {t('Moderation')}
+                        </Link>
+                      )}
+                    </div>
+
+                    <div className="border-t border-slate-100 pt-1">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={signOut}
+                        className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-rose-600 transition-colors hover:bg-rose-50"
+                      >
+                        <LogOut size={17} />
+                        {t('Sign out')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <Link to="/login" className="ml-0.5 shrink-0 rounded-lg bg-indigo-600 px-3 py-2 text-sm font-semibold text-white sm:ml-1 sm:px-4">
+                {t('Sign in')}
               </Link>
-              {user.account_role === 'admin' && <Link to="/admin" className="nav-link" title={t('Moderation')}><Shield size={17} /></Link>}
-            </>}
-            <LanguageToggle />
-            <span className="mx-1 h-6 w-px bg-slate-200" />
-            {user ? <>
-              <Link to="/profile" className="flex items-center gap-2 rounded-xl px-2 py-1.5 hover:bg-slate-100">
-                <Avatar size="sm" name={user.display_name || user.username} src={user.avatar_url} />
-                <span className="hidden text-sm font-medium text-slate-700 sm:block">{user.display_name || user.username}</span>
-              </Link>
-              <button onClick={() => { logout(); navigate('/login'); }} className="nav-link" aria-label={t('Sign out')} title={t('Sign out')}><LogOut size={17} /></button>
-            </> : <Link to="/login" className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white">{t('Sign in')}</Link>}
+            )}
           </nav>
         </div>
       </header>
