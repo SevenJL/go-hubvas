@@ -240,37 +240,134 @@ func (r *SocialRepo) Reports(ctx context.Context, status string, page, size int)
 	return out, total, err
 }
 func (r *SocialRepo) ReviewReport(ctx context.Context, admin identity.UserID, id int64, in appsocial.ReviewReportRequest) (*appsocial.ReportDTO, error) {
-	return scanReport(r.pool.QueryRow(ctx, `UPDATE reports SET status=$1::varchar,reviewer_id=$2,review_note=$3,reviewed_at=CASE WHEN $1::text IN ('resolved','dismissed') THEN now() ELSE reviewed_at END WHERE id=$4 RETURNING id,reporter_id,target_type,target_id,reason,details,status,reviewer_id,review_note,created_at,reviewed_at`, in.Status, admin, in.Note, id))
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	item, err := scanReport(tx.QueryRow(ctx, `UPDATE reports SET status=$1::varchar,reviewer_id=$2,review_note=$3,reviewed_at=CASE WHEN $1::text IN ('resolved','dismissed') THEN now() ELSE reviewed_at END WHERE id=$4 RETURNING id,reporter_id,target_type,target_id,reason,details,status,reviewer_id,review_note,created_at,reviewed_at`, in.Status, admin, in.Note, id))
+	if err != nil {
+		return nil, err
+	}
+	if err = insertAdminAudit(ctx, tx, admin, "report.review", "report", id, map[string]any{"status": in.Status, "note": in.Note}); err != nil {
+		return nil, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return item, nil
 }
-func (r *SocialRepo) SetUserStatus(ctx context.Context, id identity.UserID, status string) error {
-	tag, err := r.pool.Exec(ctx, `UPDATE users SET status=$1,updated_at=now() WHERE id=$2`, status, id)
+func (r *SocialRepo) SetUserStatus(ctx context.Context, admin, id identity.UserID, status string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE users SET status=$1,updated_at=now() WHERE id=$2`, status, id)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return shared.NewDomainError(shared.ErrNotFound, "user not found")
 	}
-	return nil
+	if err = insertAdminAudit(ctx, tx, admin, "user.status.update", "user", int64(id), map[string]any{"status": status}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
-func (r *SocialRepo) ModerateComment(ctx context.Context, id int64, status string) error {
-	tag, err := r.pool.Exec(ctx, `UPDATE comments SET moderation_status=$1 WHERE id=$2`, status, id)
+func (r *SocialRepo) ModerateComment(ctx context.Context, admin identity.UserID, id int64, status string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE comments SET moderation_status=$1 WHERE id=$2`, status, id)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return shared.NewDomainError(shared.ErrNotFound, "comment not found")
 	}
-	return nil
+	if err = insertAdminAudit(ctx, tx, admin, "comment.moderate", "comment", id, map[string]any{"status": status}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
-func (r *SocialRepo) ModerateCanvas(ctx context.Context, id int64, status string) error {
-	tag, err := r.pool.Exec(ctx, `UPDATE published_canvases SET moderation_status=$1 WHERE canvas_id=$2`, status, id)
+func (r *SocialRepo) ModerateCanvas(ctx context.Context, admin identity.UserID, id int64, status string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE published_canvases SET moderation_status=$1 WHERE canvas_id=$2`, status, id)
 	if err != nil {
 		return err
 	}
 	if tag.RowsAffected() == 0 {
 		return shared.NewDomainError(shared.ErrNotFound, "published canvas not found")
 	}
-	return nil
+	if err = insertAdminAudit(ctx, tx, admin, "canvas.moderate", "canvas", id, map[string]any{"status": status}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func insertAdminAudit(ctx context.Context, tx pgx.Tx, admin identity.UserID, action, targetType string, targetID int64, metadata map[string]any) error {
+	raw, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO admin_audit_logs(admin_id,action,target_type,target_id,metadata) VALUES($1,$2,$3,$4,$5)`, admin, action, targetType, targetID, raw)
+	return err
+}
+
+func (r *SocialRepo) AuditLogs(ctx context.Context, page, size int) ([]appsocial.AdminAuditLogDTO, int64, error) {
+	offset := (page - 1) * size
+	rows, err := r.pool.Query(ctx, `SELECT l.id,l.admin_id,COALESCE(u.username,''),COALESCE(u.display_name,''),COALESCE(u.avatar_url,''),l.action,l.target_type,l.target_id,l.metadata,l.created_at FROM admin_audit_logs l LEFT JOIN users u ON u.id=l.admin_id ORDER BY l.created_at DESC,l.id DESC LIMIT $1 OFFSET $2`, size, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	items := make([]appsocial.AdminAuditLogDTO, 0, size)
+	for rows.Next() {
+		var item appsocial.AdminAuditLogDTO
+		var raw []byte
+		if err = rows.Scan(&item.ID, &item.AdminID, &item.AdminUsername, &item.AdminDisplayName, &item.AdminAvatarURL, &item.Action, &item.TargetType, &item.TargetID, &raw, &item.CreatedAt); err != nil {
+			return nil, 0, err
+		}
+		if err = json.Unmarshal(raw, &item.Metadata); err != nil {
+			return nil, 0, err
+		}
+		items = append(items, item)
+	}
+	if err = rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	var total int64
+	if err = r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM admin_audit_logs`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	return items, total, nil
+}
+
+func (r *SocialRepo) ReplayNotificationOutbox(ctx context.Context, admin identity.UserID, limit int) (int64, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE notification_outbox SET dead_lettered_at=NULL,attempts=0,last_error=NULL,available_at=now(),lease_owner=NULL,leased_until=NULL WHERE id IN (SELECT id FROM notification_outbox WHERE dead_lettered_at IS NOT NULL ORDER BY id LIMIT $1)`, limit)
+	if err != nil {
+		return 0, err
+	}
+	count := tag.RowsAffected()
+	if err = insertAdminAudit(ctx, tx, admin, "notification_outbox.replay", "notification_outbox", 0, map[string]any{"count": count, "limit": limit}); err != nil {
+		return 0, err
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 type scanner interface{ Scan(...any) error }

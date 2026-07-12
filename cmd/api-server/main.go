@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -46,6 +47,7 @@ func required(cfg config.Config, name string, err error) {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	log.Println("Starting Hubvas API Server...")
 	cfg, err := config.Load(configPath())
@@ -111,11 +113,12 @@ func main() {
 	socialRepo := postgres.NewSocialRepo(pool)
 	mediaRepo := postgres.NewMediaRepo(pool)
 	sessionRepo := postgres.NewAuthSessionRepo(pool)
+	accountRepo := postgres.NewAccountRepo(pool)
 	snapshotRepo := postgres.NewSnapshotStore(pool)
 	jwtSvc := infAuth.NewJWTServiceWithClaims(cfg.Auth.AccessSecret, cfg.Auth.AccessTokenTTL, cfg.Auth.Issuer, cfg.Auth.Audience)
 	pwdSvc := infAuth.NewBcryptPasswordService(cfg.Auth.BcryptCost)
 	permSvc := infAuth.NewCanvasPermissionService(canvasRepo)
-	authAppSvc := auth.NewAuthApplicationService(userRepo, sessionRepo, jwtSvc, pwdSvc, cfg.Auth.RefreshTokenTTL)
+	authAppSvc := auth.NewAuthApplicationService(userRepo, sessionRepo, accountRepo, jwtSvc, pwdSvc, cfg.Auth.RefreshTokenTTL)
 	socialAppSvc := appSocial.NewService(socialRepo, userRepo)
 	mediaAppSvc := appMedia.NewService(mediaRepo, avatarStore, cfg.Storage.PresignTTL, cfg.Storage.AvatarMaxBytes)
 	canvasAppSvc := appCanvas.NewCanvasApplicationService(canvasRepo, snapshotRepo, communityRepo, userRepo, &snowflakeIDAdapter{sf: idGen})
@@ -136,6 +139,12 @@ func main() {
 				}
 				if _, err := sessionRepo.CleanupExpired(mediaCtx, time.Now().UTC(), 1000); err != nil {
 					log.Printf("[auth] session cleanup failed: %v", err)
+				}
+				if _, err := pool.Exec(mediaCtx, `DELETE FROM idempotency_keys WHERE (user_id,scope,idempotency_key) IN (SELECT user_id,scope,idempotency_key FROM idempotency_keys WHERE expires_at<now() ORDER BY expires_at LIMIT 1000)`); err != nil {
+					log.Printf("[idempotency] cleanup failed: %v", err)
+				}
+				if _, err := pool.Exec(mediaCtx, `DELETE FROM notification_outbox WHERE published_at<now()-interval '7 days'`); err != nil {
+					log.Printf("[notifications] published outbox cleanup failed: %v", err)
 				}
 			}
 		}
@@ -175,7 +184,7 @@ func main() {
 		rateLimiter = middleware.NewRateLimiter(100, 200)
 	}
 	gin.SetMode(gin.ReleaseMode)
-	router := httpapi.NewRouter(httpapi.RouterConfig{AuthHandler: authHandler, CanvasHandler: canvasHandler, CommunityHandler: communityHandler, HealthHandler: healthHandler, SnapshotHandler: snapshotHandler, SocialHandler: socialHandler, MediaHandler: mediaHandler, TokenSvc: jwtSvc, RateLimiter: rateLimiter, UserLookup: userRepo, TrustedProxies: cfg.Server.TrustedProxies})
+	router := httpapi.NewRouter(httpapi.RouterConfig{AuthHandler: authHandler, CanvasHandler: canvasHandler, CommunityHandler: communityHandler, HealthHandler: healthHandler, SnapshotHandler: snapshotHandler, SocialHandler: socialHandler, MediaHandler: mediaHandler, TokenSvc: jwtSvc, RateLimiter: rateLimiter, UserLookup: userRepo, TrustedProxies: cfg.Server.TrustedProxies, DBPool: pool})
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.APIHost, cfg.Server.APIPort)
 	srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout, ReadTimeout: cfg.Server.ReadTimeout, WriteTimeout: cfg.Server.WriteTimeout, IdleTimeout: cfg.Server.IdleTimeout}

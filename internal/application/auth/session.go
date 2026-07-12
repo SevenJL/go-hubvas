@@ -26,6 +26,8 @@ type RefreshSessionRepository interface {
 	Rotate(ctx context.Context, currentHash []byte, replacement RefreshSession) (identity.UserID, error)
 	Revoke(ctx context.Context, tokenHash []byte) error
 	RevokeAll(ctx context.Context, userID identity.UserID) error
+	List(ctx context.Context, userID identity.UserID, currentHash []byte) ([]SessionDTO, error)
+	RevokeByID(ctx context.Context, userID identity.UserID, sessionID string) error
 }
 
 func newRefreshCredential(userID identity.UserID, familyID string, ttl time.Duration, meta SessionMetadata) (RefreshSession, string, error) {

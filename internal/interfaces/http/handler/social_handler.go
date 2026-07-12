@@ -270,3 +270,29 @@ func (h *SocialHandler) ModerateCanvas(c *gin.Context) {
 	}
 	response.OK(c, gin.H{"status": in.Status})
 }
+
+func (h *SocialHandler) AdminAuditLogs(c *gin.Context) {
+	p, s := page(c)
+	items, total, err := h.svc.AuditLogs(c.Request.Context(), middleware.GetUserID(c), p, s)
+	if err != nil {
+		socialError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"items": items, "total": total, "page": p, "page_size": s})
+}
+
+func (h *SocialHandler) ReplayNotificationOutbox(c *gin.Context) {
+	var input struct {
+		Limit int `json:"limit" binding:"omitempty,min=1,max=1000"`
+	}
+	if err := c.ShouldBindJSON(&input); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	count, err := h.svc.ReplayNotificationOutbox(c.Request.Context(), middleware.GetUserID(c), input.Limit)
+	if err != nil {
+		socialError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"replayed": count})
+}

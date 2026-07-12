@@ -54,12 +54,22 @@ func (*socialRepoStub) Reports(context.Context, string, int, int) ([]ReportDTO, 
 func (*socialRepoStub) ReviewReport(context.Context, identity.UserID, int64, ReviewReportRequest) (*ReportDTO, error) {
 	return &ReportDTO{}, nil
 }
-func (r *socialRepoStub) SetUserStatus(_ context.Context, _ identity.UserID, status string) error {
+func (r *socialRepoStub) SetUserStatus(_ context.Context, _, _ identity.UserID, status string) error {
 	r.status = status
 	return nil
 }
-func (*socialRepoStub) ModerateComment(context.Context, int64, string) error { return nil }
-func (*socialRepoStub) ModerateCanvas(context.Context, int64, string) error  { return nil }
+func (*socialRepoStub) ModerateComment(context.Context, identity.UserID, int64, string) error {
+	return nil
+}
+func (*socialRepoStub) ModerateCanvas(context.Context, identity.UserID, int64, string) error {
+	return nil
+}
+func (*socialRepoStub) AuditLogs(context.Context, int, int) ([]AdminAuditLogDTO, int64, error) {
+	return nil, 0, nil
+}
+func (*socialRepoStub) ReplayNotificationOutbox(context.Context, identity.UserID, int) (int64, error) {
+	return 0, nil
+}
 
 type userRepoStub struct {
 	users map[identity.UserID]*identity.User

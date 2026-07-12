@@ -55,7 +55,7 @@ export const canvasService = {
   },
 
   async fork(id: string): Promise<CanvasInfo> {
-    const res = await api.post<CanvasInfo>(`/canvases/${id}/fork`);
+    const res = await api.postIdempotent<CanvasInfo>(`/canvases/${id}/fork`);
     if (res.code !== 0 || !res.data) throw new Error(res.message);
     return res.data;
   },

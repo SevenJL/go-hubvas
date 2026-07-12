@@ -1,5 +1,5 @@
 import { api, clearTokens, setTokens } from './api';
-import type { User, TokenResponse, RegisterResponse } from '../types';
+import type { User, TokenResponse, RegisterResponse, AuthSession } from '../types';
 
 export interface RegisterInput {
   username: string;
@@ -59,5 +59,21 @@ export const authService = {
       throw new Error(res.message || 'Update failed');
     }
     return res.data;
+  },
+  async sessions(): Promise<AuthSession[]> {
+    const res = await api.get<{ sessions: AuthSession[] }>('/auth/sessions');
+    if (res.code !== 0 || !res.data) throw new Error(res.message || 'Could not load sessions');
+    return res.data.sessions;
+  },
+
+  async revokeSession(id: string): Promise<void> {
+    const res = await api.delete(`/auth/sessions/${encodeURIComponent(id)}`);
+    if (res.code !== 0) throw new Error(res.message || 'Could not revoke session');
+  },
+
+  async changePassword(currentPassword: string, newPassword: string): Promise<void> {
+    const res = await api.post('/auth/password', { current_password: currentPassword, new_password: newPassword });
+    if (res.code !== 0) throw new Error(res.message || 'Could not change password');
+    clearTokens();
   },
 };

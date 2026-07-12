@@ -26,9 +26,11 @@ type Repository interface {
 	CreateReport(context.Context, identity.UserID, ReportRequest) (*ReportDTO, error)
 	Reports(context.Context, string, int, int) ([]ReportDTO, int64, error)
 	ReviewReport(context.Context, identity.UserID, int64, ReviewReportRequest) (*ReportDTO, error)
-	SetUserStatus(context.Context, identity.UserID, string) error
-	ModerateComment(context.Context, int64, string) error
-	ModerateCanvas(context.Context, int64, string) error
+	SetUserStatus(context.Context, identity.UserID, identity.UserID, string) error
+	ModerateComment(context.Context, identity.UserID, int64, string) error
+	ModerateCanvas(context.Context, identity.UserID, int64, string) error
+	AuditLogs(context.Context, int, int) ([]AdminAuditLogDTO, int64, error)
+	ReplayNotificationOutbox(context.Context, identity.UserID, int) (int64, error)
 }
 type Service struct {
 	repo  Repository
@@ -131,7 +133,7 @@ func (s *Service) SetUserStatus(ctx context.Context, admin, target identity.User
 	if err := s.requireAdmin(ctx, admin); err != nil {
 		return err
 	}
-	return s.repo.SetUserStatus(ctx, target, status)
+	return s.repo.SetUserStatus(ctx, admin, target, status)
 }
 func (s *Service) ModerateComment(ctx context.Context, admin identity.UserID, id int64, status string) error {
 	if id <= 0 || !oneOf(status, "visible", "hidden") {
@@ -140,7 +142,7 @@ func (s *Service) ModerateComment(ctx context.Context, admin identity.UserID, id
 	if err := s.requireAdmin(ctx, admin); err != nil {
 		return err
 	}
-	return s.repo.ModerateComment(ctx, id, status)
+	return s.repo.ModerateComment(ctx, admin, id, status)
 }
 func (s *Service) ModerateCanvas(ctx context.Context, admin identity.UserID, id int64, status string) error {
 	if id <= 0 || !oneOf(status, "visible", "hidden") {
@@ -149,8 +151,29 @@ func (s *Service) ModerateCanvas(ctx context.Context, admin identity.UserID, id 
 	if err := s.requireAdmin(ctx, admin); err != nil {
 		return err
 	}
-	return s.repo.ModerateCanvas(ctx, id, status)
+	return s.repo.ModerateCanvas(ctx, admin, id, status)
 }
+
+func (s *Service) AuditLogs(ctx context.Context, admin identity.UserID, page, size int) ([]AdminAuditLogDTO, int64, error) {
+	if err := s.requireAdmin(ctx, admin); err != nil {
+		return nil, 0, err
+	}
+	page, size = normalize(page, size)
+	return s.repo.AuditLogs(ctx, page, size)
+}
+func (s *Service) ReplayNotificationOutbox(ctx context.Context, admin identity.UserID, limit int) (int64, error) {
+	if err := s.requireAdmin(ctx, admin); err != nil {
+		return 0, err
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		return 0, shared.NewDomainError(shared.ErrInvalidArgument, "replay limit must not exceed 1000")
+	}
+	return s.repo.ReplayNotificationOutbox(ctx, admin, limit)
+}
+
 func (s *Service) requireAdmin(ctx context.Context, id identity.UserID) error {
 	u, err := s.users.FindByID(ctx, id)
 	if err != nil {

@@ -209,3 +209,50 @@ func (h *AuthHandler) Me(c *gin.Context) {
 	}
 	response.OK(c, user)
 }
+
+func (h *AuthHandler) Sessions(c *gin.Context) {
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		response.Unauthorized(c, "not authenticated")
+		return
+	}
+	currentToken, _ := c.Cookie(h.cfg.CookieName)
+	items, err := h.appSvc.Sessions(c.Request.Context(), userID, currentToken)
+	if err != nil {
+		respondAuthError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"sessions": items})
+}
+
+func (h *AuthHandler) RevokeSession(c *gin.Context) {
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		response.Unauthorized(c, "not authenticated")
+		return
+	}
+	if err := h.appSvc.RevokeSession(c.Request.Context(), userID, c.Param("id")); err != nil {
+		respondAuthError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"revoked": true})
+}
+
+func (h *AuthHandler) ChangePassword(c *gin.Context) {
+	userID, ok := authenticatedUserID(c)
+	if !ok {
+		response.Unauthorized(c, "not authenticated")
+		return
+	}
+	var req appauth.ChangePasswordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+	if err := h.appSvc.ChangePassword(c.Request.Context(), userID, req); err != nil {
+		respondAuthError(c, err)
+		return
+	}
+	h.clearRefreshCookie(c)
+	response.OK(c, gin.H{"password_changed": true, "sessions_revoked": true})
+}

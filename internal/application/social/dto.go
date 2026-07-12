@@ -91,3 +91,16 @@ type PublishedPage struct {
 	Page       int                `json:"page"`
 	PageSize   int                `json:"page_size"`
 }
+
+type AdminAuditLogDTO struct {
+	ID               int64          `json:"id,string"`
+	AdminID          *int64         `json:"admin_id,omitempty,string"`
+	AdminUsername    string         `json:"admin_username"`
+	AdminDisplayName string         `json:"admin_display_name"`
+	AdminAvatarURL   string         `json:"admin_avatar_url,omitempty"`
+	Action           string         `json:"action"`
+	TargetType       string         `json:"target_type"`
+	TargetID         int64          `json:"target_id,string"`
+	Metadata         map[string]any `json:"metadata"`
+	CreatedAt        time.Time      `json:"created_at"`
+}

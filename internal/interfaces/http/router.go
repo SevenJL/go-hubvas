@@ -5,6 +5,8 @@ import (
 	"github.com/hubvas/internal/interfaces/http/handler"
 	"github.com/hubvas/internal/interfaces/http/middleware"
 	"github.com/hubvas/internal/interfaces/ws"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 // RouterConfig holds all dependencies needed to build the HTTP router.
@@ -21,6 +23,7 @@ type RouterConfig struct {
 	RateLimiter      *middleware.RateLimiter
 	UserLookup       middleware.AccountLookup
 	TrustedProxies   []string
+	DBPool           *pgxpool.Pool
 }
 
 // NewRouter creates and configures the Gin router with all routes.
@@ -35,15 +38,20 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	commentLimit := cfg.RateLimiter.Scoped(0.25, 8)
 	reportLimit := cfg.RateLimiter.Scoped(0.05, 3)
 	adminLimit := cfg.RateLimiter.Scoped(0.5, 10)
+	passwordLimit := cfg.RateLimiter.Scoped(0.05, 3)
+	idempotency := middleware.Idempotency(cfg.DBPool)
 
 	// Global middleware.
+	r.Use(middleware.RequestID())
+	r.Use(middleware.Metrics())
+	r.Use(middleware.AccessLog(nil))
 	r.Use(middleware.Recovery())
 	r.Use(cfg.RateLimiter.Middleware())
-	r.Use(gin.Logger())
 
 	// ---- Health check (no auth) ----
 	r.GET("/health", cfg.HealthHandler.Health)
 	r.GET("/ready", cfg.HealthHandler.Ready)
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// ---- Public routes (no auth required) ----
 
@@ -81,12 +89,15 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// Auth and profile media
 		api.GET("/auth/me", cfg.AuthHandler.Me)
 		api.POST("/auth/logout-all", cfg.AuthHandler.LogoutAll)
+		api.GET("/auth/sessions", cfg.AuthHandler.Sessions)
+		api.DELETE("/auth/sessions/:id", cfg.AuthHandler.RevokeSession)
+		api.POST("/auth/password", passwordLimit.KeyedMiddleware("password", true), cfg.AuthHandler.ChangePassword)
 		api.PUT("/auth/profile", cfg.AuthHandler.UpdateProfile)
 		api.PATCH("/auth/profile", cfg.AuthHandler.UpdateProfile)
 		api.DELETE("/auth/avatar", cfg.MediaHandler.Remove)
 		api.POST("/media/avatars/presign", uploadLimit.KeyedMiddleware("avatar", true), cfg.MediaHandler.Presign)
-		api.POST("/media/avatars/complete", uploadLimit.KeyedMiddleware("avatar", true), cfg.MediaHandler.Complete)
-		api.POST("/media/avatars", uploadLimit.KeyedMiddleware("avatar", true), cfg.MediaHandler.Upload)
+		api.POST("/media/avatars/complete", uploadLimit.KeyedMiddleware("avatar", true), idempotency, cfg.MediaHandler.Complete)
+		api.POST("/media/avatars", uploadLimit.KeyedMiddleware("avatar", true), idempotency, cfg.MediaHandler.Upload)
 
 		// Social graph, personalized feed, notifications and safety
 		api.POST("/users/:identifier/follow", followLimit.KeyedMiddleware("follow", true), cfg.SocialHandler.Follow)
@@ -101,12 +112,14 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		api.GET("/notifications/unread-count", cfg.SocialHandler.UnreadCount)
 		api.PATCH("/notifications/:id/read", cfg.SocialHandler.MarkRead)
 		api.POST("/notifications/read-all", cfg.SocialHandler.MarkAllRead)
-		api.POST("/reports", reportLimit.KeyedMiddleware("report", true), cfg.SocialHandler.Report)
+		api.POST("/reports", reportLimit.KeyedMiddleware("report", true), idempotency, cfg.SocialHandler.Report)
 		api.GET("/admin/reports", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.AdminReports)
-		api.PATCH("/admin/reports/:id", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.ReviewReport)
-		api.PATCH("/admin/users/:identifier/status", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.UserStatus)
-		api.PATCH("/admin/comments/:id/moderation", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.ModerateComment)
-		api.PATCH("/admin/canvases/:id/moderation", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.ModerateCanvas)
+		api.GET("/admin/audit-logs", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.AdminAuditLogs)
+		api.POST("/admin/notifications/outbox/replay", adminLimit.KeyedMiddleware("admin", true), idempotency, cfg.SocialHandler.ReplayNotificationOutbox)
+		api.PATCH("/admin/reports/:id", adminLimit.KeyedMiddleware("admin", true), idempotency, cfg.SocialHandler.ReviewReport)
+		api.PATCH("/admin/users/:identifier/status", adminLimit.KeyedMiddleware("admin", true), idempotency, cfg.SocialHandler.UserStatus)
+		api.PATCH("/admin/comments/:id/moderation", adminLimit.KeyedMiddleware("admin", true), idempotency, cfg.SocialHandler.ModerateComment)
+		api.PATCH("/admin/canvases/:id/moderation", adminLimit.KeyedMiddleware("admin", true), idempotency, cfg.SocialHandler.ModerateCanvas)
 
 		// Canvases (write operations)
 		api.POST("/canvases", cfg.CanvasHandler.Create)
@@ -116,13 +129,13 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		api.PUT("/canvases/:id/members/:userId", cfg.CanvasHandler.UpdateMemberRole)
 		api.DELETE("/canvases/:id/members/:userId", cfg.CanvasHandler.RemoveMember)
 		api.POST("/canvases/:id/publish", cfg.CanvasHandler.Publish)
-		api.POST("/canvases/:id/fork", cfg.CanvasHandler.Fork)
+		api.POST("/canvases/:id/fork", idempotency, cfg.CanvasHandler.Fork)
 		api.DELETE("/canvases/:id", cfg.CanvasHandler.Delete)
 
 		// Community (write operations)
 		api.POST("/canvases/:id/like", cfg.CommunityHandler.Like)
 		api.DELETE("/canvases/:id/like", cfg.CommunityHandler.Unlike)
-		api.POST("/canvases/:id/comments", commentLimit.KeyedMiddleware("comment", true), cfg.CommunityHandler.PostComment)
+		api.POST("/canvases/:id/comments", commentLimit.KeyedMiddleware("comment", true), idempotency, cfg.CommunityHandler.PostComment)
 		api.DELETE("/comments/:id", cfg.CommunityHandler.DeleteComment)
 
 		// Snapshots (save requires auth)

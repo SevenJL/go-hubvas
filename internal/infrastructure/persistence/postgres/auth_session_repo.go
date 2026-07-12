@@ -109,3 +109,38 @@ func (r *AuthSessionRepo) CleanupExpired(ctx context.Context, before time.Time, 
 	}
 	return result.RowsAffected(), nil
 }
+
+func (r *AuthSessionRepo) List(ctx context.Context, userID identity.UserID, currentHash []byte) ([]appauth.SessionDTO, error) {
+	rows, err := r.pool.Query(ctx, `SELECT id,user_agent,COALESCE(host(ip_address),''),created_at,last_used_at,expires_at,revoked_at,CASE WHEN $2::bytea IS NULL THEN false ELSE token_hash=$2 END FROM auth_sessions WHERE user_id=$1 AND expires_at>now() ORDER BY created_at DESC`, userID, nullableBytes(currentHash))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]appauth.SessionDTO, 0)
+	for rows.Next() {
+		var item appauth.SessionDTO
+		if err := rows.Scan(&item.ID, &item.UserAgent, &item.IPAddress, &item.CreatedAt, &item.LastUsedAt, &item.ExpiresAt, &item.RevokedAt, &item.Current); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func nullableBytes(value []byte) any {
+	if len(value) == 0 {
+		return nil
+	}
+	return value
+}
+
+func (r *AuthSessionRepo) RevokeByID(ctx context.Context, userID identity.UserID, sessionID string) error {
+	tag, err := r.pool.Exec(ctx, `UPDATE auth_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE id=$1 AND user_id=$2`, sessionID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return shared.NewDomainError(shared.ErrNotFound, "session not found")
+	}
+	return nil
+}

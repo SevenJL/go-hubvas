@@ -46,7 +46,7 @@ export const communityService = {
   },
 
   async postComment(canvasId: string, content: string, parentCommentId?: string): Promise<CommentInfo> {
-    const res = await api.post<CommentInfo>(`/canvases/${canvasId}/comments`, { content, parent_comment_id: parentCommentId });
+    const res = await api.postIdempotent<CommentInfo>(`/canvases/${canvasId}/comments`, { content, parent_comment_id: parentCommentId });
     if (res.code !== 0 || !res.data) throw new Error(res.message || 'Failed to post comment');
     return res.data;
   },

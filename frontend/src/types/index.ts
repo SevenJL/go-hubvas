@@ -6,6 +6,10 @@ export interface User {
 }
 export interface TokenResponse { access_token: string; expires_at: number; token_type: string }
 export interface RegisterResponse { user: User; tokens: TokenResponse }
+export interface AuthSession {
+  id: string; user_agent: string; ip_address?: string; created_at: string; last_used_at: string;
+  expires_at: string; revoked_at?: string; current: boolean;
+}
 
 export interface CanvasInfo { id: string; owner_id: string; title: string; visibility: 'private' | 'published'; forked_from?: string; member_count: number; online_count: number; current_role?: 'owner' | 'editor' | 'viewer' | 'commenter'; created_at: string; updated_at: string }
 export interface CanvasMember { user_id: string; username: string; display_name?: string; avatar_url?: string; role: 'owner' | 'editor' | 'viewer' | 'commenter' }
@@ -30,6 +34,8 @@ export interface NotificationInfo { id: string; event_type: 'follow'|'like'|'com
 export interface NotificationPage { items: NotificationInfo[]; total: number; page: number; page_size: number }
 export interface ReportInfo { id: string; reporter_id: string; target_type: 'user'|'canvas'|'comment'; target_id: string; reason: string; details: string; status: 'pending'|'reviewing'|'resolved'|'dismissed'; reviewer_id?: string; review_note: string; created_at: string; reviewed_at?: string }
 export interface ReportPage { items: ReportInfo[]; total: number; page: number; page_size: number }
+export interface AdminAuditLog { id: string; admin_id?: string; admin_username: string; admin_display_name: string; admin_avatar_url?: string; action: string; target_type: string; target_id: string; metadata: Record<string, unknown>; created_at: string }
+export interface AdminAuditPage { items: AdminAuditLog[]; total: number; page: number; page_size: number }
 export interface AvatarPresign { upload_id: string; upload_url: string; expires_at: string; headers: Record<string,string> }
 export interface AvatarResult { avatar_url: string; avatar_version: number }
 

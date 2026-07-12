@@ -45,7 +45,7 @@ export const mediaService = {
 
     // Processing and crop validation errors must be shown to the user instead of
     // silently repeating the upload through another transport.
-    return unwrap(await api.post<AvatarResult>('/media/avatars/complete', {
+    return unwrap(await api.postIdempotent<AvatarResult>('/media/avatars/complete', {
       upload_id: presign.upload_id,
       crop,
     }));

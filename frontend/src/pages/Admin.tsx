@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Eye, EyeOff, PauseCircle, PlayCircle } from 'lucide-react';
+import { ClipboardList, Eye, EyeOff, PauseCircle, PlayCircle, ScrollText } from 'lucide-react';
 import { Layout } from '../components/layout/Layout';
 import { Button, PageLoader, useToast } from '../components/ui';
 import { socialService } from '../services/social';
-import type { ReportInfo } from '../types';
+import type { AdminAuditLog, ReportInfo } from '../types';
 import { useI18n } from '../i18n';
 
 type QueueStatus = ReportInfo['status'];
@@ -11,6 +11,8 @@ const statuses: QueueStatus[] = ['pending', 'reviewing', 'resolved', 'dismissed'
 
 export function Admin() {
   const [items, setItems] = useState<ReportInfo[]>([]);
+  const [auditItems, setAuditItems] = useState<AdminAuditLog[]>([]);
+  const [view, setView] = useState<'reports' | 'audit'>('reports');
   const [status, setStatus] = useState<QueueStatus>('pending');
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<string | null>(null);
@@ -19,10 +21,13 @@ export function Admin() {
 
   const load = useCallback(async () => {
     setLoading(true);
-    try { setItems((await socialService.reports(status)).items); }
+    try {
+      if (view === 'reports') setItems((await socialService.reports(status)).items);
+      else setAuditItems((await socialService.auditLogs()).items);
+    }
     catch (error) { toast.error(error instanceof Error ? error.message : t('Admin access required')); }
     finally { setLoading(false); }
-  }, [status, toast, t]);
+  }, [status, toast, t, view]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -59,11 +64,16 @@ export function Admin() {
     <h1 className="text-3xl font-bold text-slate-950">{t('Moderation queue')}</h1>
     <p className="mt-2 text-slate-500">{t('Review pending user, canvas and comment reports.')}</p>
 
-    <div className="mt-6 flex flex-wrap gap-2" aria-label={t('Report status filter')}>
-      {statuses.map(option => <button key={option} onClick={() => setStatus(option)} className={`rounded-full px-4 py-2 text-sm font-semibold transition ${status === option ? 'bg-slate-950 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>{t(option)}</button>)}
+    <div className="mt-6 flex gap-2 border-b border-slate-200 pb-4">
+      <button onClick={() => setView('reports')} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold ${view === 'reports' ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100'}`}><ClipboardList size={16} />{t('Reports')}</button>
+      <button onClick={() => setView('audit')} className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-sm font-semibold ${view === 'audit' ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100'}`}><ScrollText size={16} />{t('Audit log')}</button>
     </div>
 
-    {loading ? <PageLoader label={t('Loading reports...')} /> : <div className="mt-8 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+    {view === 'reports' && <div className="mt-5 flex flex-wrap gap-2" aria-label={t('Report status filter')}>
+      {statuses.map(option => <button key={option} onClick={() => setStatus(option)} className={`rounded-full px-4 py-2 text-sm font-semibold transition ${status === option ? 'bg-slate-950 text-white' : 'bg-white text-slate-600 ring-1 ring-slate-200 hover:bg-slate-50'}`}>{t(option)}</button>)}
+    </div>}
+
+    {loading ? <PageLoader label={t(view === 'reports' ? 'Loading reports...' : 'Loading audit log...')} /> : view === 'reports' ? <div className="mt-8 overflow-hidden rounded-2xl border border-slate-200 bg-white">
       {items.length ? items.map(report => <article key={report.id} className="border-b border-slate-100 p-5 last:border-0">
         <div className="grid gap-5 lg:grid-cols-[1fr_auto]">
           <div>
@@ -91,6 +101,12 @@ export function Admin() {
           </div>
         </div>
       </article>) : <div className="p-14 text-center text-slate-500">{t('No reports in this queue.')}</div>}
+    </div> : <div className="mt-8 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      {auditItems.length ? auditItems.map(item => <article key={item.id} className="grid gap-2 border-b border-slate-100 p-5 last:border-0 sm:grid-cols-[1fr_auto]">
+        <div><p className="font-medium text-slate-900">{item.action}</p><p className="mt-1 text-sm text-slate-500">{item.target_type} #{item.target_id} · {item.admin_display_name || item.admin_username || t('Deleted administrator')}</p></div>
+        <time className="text-xs text-slate-400">{new Date(item.created_at).toLocaleString()}</time>
+        {Object.keys(item.metadata).length > 0 && <pre className="overflow-x-auto rounded-xl bg-slate-50 p-3 text-xs text-slate-600 sm:col-span-2">{JSON.stringify(item.metadata, null, 2)}</pre>}
+      </article>) : <div className="p-14 text-center text-slate-500">{t('No audit events yet.')}</div>}
     </div>}
   </main></Layout>;
 }
