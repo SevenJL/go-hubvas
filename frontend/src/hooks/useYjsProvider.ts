@@ -96,6 +96,8 @@ export function useYjsProvider({
 
     ws.onmessage = (event) => {
       if (event.data instanceof ArrayBuffer) {
+        // Apply every server-authorized CRDT update, including for read-only
+        // viewers, so non-members see editors' changes in real time.
         try {
           Y.applyUpdate(doc, new Uint8Array(event.data), 'remote');
         } catch {
@@ -205,14 +207,14 @@ export function useYjsProvider({
 
   useEffect(() => {
     const handler = (update: Uint8Array, origin: unknown) => {
-      if (origin === 'remote') return;
+      if (!canEdit || origin === 'remote') return;
       if (wsRef.current?.readyState === WebSocket.OPEN) {
         wsRef.current.send(toArrayBuffer(update));
       }
     };
     doc.on('update', handler);
     return () => doc.off('update', handler);
-  }, [doc]);
+  }, [doc, canEdit]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -234,10 +236,10 @@ export function useYjsProvider({
   useEffect(() => () => doc.destroy(), [doc]);
 
   const sendSync = useCallback((update: Uint8Array) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
+    if (canEdit && wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(toArrayBuffer(update));
     }
-  }, []);
+  }, [canEdit]);
 
   const sendAwareness = useCallback(
     (cursor: { x: number; y: number; pageId?: string } | null, selection?: unknown) => {

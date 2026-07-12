@@ -195,6 +195,8 @@ const zh: Record<string, string> = {
   'Published': '已发布',
   'Delete': '删除',
   'Canvas preview': '画布预览',
+  'Edit canvas': '编辑画布',
+  'View canvas': '查看画布',
 
   'ACCOUNT': '账号',
   'Profile settings': '个人资料设置',

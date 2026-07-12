@@ -74,12 +74,12 @@ export function Editor() {
     canvasService.get(canvasId).then(setCanvas).catch(err => setLoadError(err.message));
   }, [canvasId]);
 
-  const isOwner = user && canvas ? Number(canvas.owner_id) === Number(user.id) : false;
+  const isOwner = user && canvas ? canvas.owner_id === user.id : false;
 
   // Determine if current user can edit this canvas.
   const canEdit = user && canvas
     ? canvas.current_role === 'owner' || canvas.current_role === 'editor'
-      || Number(canvas.owner_id) === Number(user.id)
+      || canvas.owner_id === user.id
     : false;
 
   // ---- WebSocket (awareness + real-time sync for editors) ----

@@ -61,6 +61,36 @@ func (s *presenceRepositoryStub) GetOnlineCount(context.Context, collaboration.R
 	return 0, nil
 }
 
+func TestRoomBroadcastsRealtimeSyncToReadOnlyViewer(t *testing.T) {
+	room := NewRoom(7, nil, nil, nil, nil, nil)
+	defer room.Shutdown()
+
+	editor := &Client{UserID: 42, CanEdit: true, send: make(chan []byte, 4)}
+	viewer := &Client{UserID: 77, CanEdit: false, send: make(chan []byte, 4)}
+	room.clients[editor] = true
+	room.clients[viewer] = true
+
+	update := []byte{1, 2, 3, 4}
+	room.processOpFrom(collaboration.Operation{
+		Type: collaboration.OpSync, UserID: editor.UserID, Payload: update,
+	}, true, editor)
+
+	select {
+	case frame := <-viewer.send:
+		if len(frame) != len(update)+1 || frame[0] != 0 || string(frame[1:]) != string(update) {
+			t.Fatalf("read-only viewer received an invalid binary sync frame: %v", frame)
+		}
+	default:
+		t.Fatal("read-only viewer did not receive the editor's realtime sync update")
+	}
+
+	select {
+	case <-editor.send:
+		t.Fatal("sync update should not be echoed back to its source connection")
+	default:
+	}
+}
+
 func TestRoomPublishesOnlyLocalOperations(t *testing.T) {
 	pubsub := &operationPubSubStub{}
 	room := NewRoom(7, nil, nil, pubsub, nil, nil)

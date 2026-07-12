@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, Flag, GitFork, Heart, MessageCircle, Reply, Send, Trash2 } from 'lucide-react';
+import { ArrowLeft, Flag, GitFork, Heart, MessageCircle, PencilLine, Reply, Send, Trash2 } from 'lucide-react';
 import { Layout } from '../components/layout/Layout';
 import { canvasService } from '../services/canvas';
 import { communityService } from '../services/community';
@@ -127,6 +127,11 @@ export function CanvasDetail() {
     }
   };
 
+  const ownsCanvas = Boolean(user && canvas && user.id === canvas.owner_id);
+  const canEditCanvas = Boolean(ownsCanvas || canvas?.current_role === 'owner' || canvas?.current_role === 'editor');
+  // Published canvases can be opened by any signed-in user; the editor enforces read-only mode for non-editors.
+  const canOpenCanvas = Boolean(user);
+
   const handleFork = async () => {
     if (!requireLogin() || forking) return;
     setForking(true);
@@ -155,10 +160,23 @@ export function CanvasDetail() {
           <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <CanvasThumbnail canvasId={canvas.id} />
             <div className="p-6">
-              <h1 className="text-2xl font-bold text-slate-900">{canvas.title}</h1>
-              <p className="mt-1 text-sm text-slate-500">{t('by {author}', { author: published?.author_name || t('User #{id}', { id: canvas.owner_id }) })} · {t('{count} members', { count: canvas.member_count })}</p>
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <h1 className="break-words text-2xl font-bold text-slate-900">{canvas.title}</h1>
+                  <p className="mt-1 text-sm text-slate-500">{t('by {author}', { author: published?.author_name || t('User #{id}', { id: canvas.owner_id }) })} · {t('{count} members', { count: canvas.member_count })}</p>
+                </div>
+                {canOpenCanvas && (
+                  <Button
+                    className="w-full shrink-0 sm:w-auto"
+                    onClick={() => navigate(`/canvas/${canvas.id}/edit`)}
+                  >
+                    <PencilLine size={16} />
+                    {t(canEditCanvas ? 'Edit canvas' : 'View canvas')}
+                  </Button>
+                )}
+              </div>
 
-              <div className="mt-4 flex items-center gap-3 border-b border-slate-100 pb-4">
+              <div className="mt-4 flex flex-wrap items-center gap-3 border-b border-slate-100 pb-4">
                 <button disabled={liking} onClick={() => void handleLike()} className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm transition-colors disabled:opacity-50 ${liked ? 'bg-red-50 text-red-600' : 'text-slate-500 hover:bg-slate-100'}`}>
                   <Heart size={16} fill={liked ? 'currentColor' : 'none'} /> {likeCount}
                 </button>
