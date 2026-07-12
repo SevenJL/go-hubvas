@@ -42,11 +42,11 @@ export function OnlineUsers({ users, connected, currentUsername, currentAvatarUR
   const total = users.length + 1; // +1 for current user
 
   return (
-    <div className="relative" ref={ref}>
+    <div className="relative shrink-0" ref={ref}>
       {/* Trigger */}
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-gray-900 transition-colors px-2 py-1 rounded-md hover:bg-gray-100"
+        className="flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-md px-1.5 py-1 text-xs text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-900 sm:px-2"
         title={t('{count} online', { count: total })}
       >
         {connected ? (

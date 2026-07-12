@@ -280,23 +280,23 @@ export function Editor() {
     <Layout>
       <div className="h-[calc(100vh-3.5rem)] flex flex-col">
         {/* Toolbar */}
-        <div className="h-11 bg-white border-b border-gray-200 flex items-center justify-between px-4 z-50 shrink-0">
-          <div className="flex items-center gap-3">
-            <Link to="/dashboard" className="text-gray-400 hover:text-gray-600 transition-colors" title={t('Back to dashboard')}>
+        <div className="z-50 flex h-11 shrink-0 items-center justify-between gap-1.5 border-b border-gray-200 bg-white px-2 sm:gap-3 sm:px-4">
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 sm:gap-3">
+            <Link to="/dashboard" className="shrink-0 text-gray-400 transition-colors hover:text-gray-600" title={t('Back to dashboard')}>
               <ArrowLeft size={20} />
             </Link>
-            <h2 className="font-semibold text-gray-900 text-sm">{canvas.title}</h2>
+            <h2 className="min-w-0 flex-1 truncate text-sm font-semibold text-gray-900" title={canvas.title}>{canvas.title}</h2>
 
             {/* Read-only badge */}
             {!canEdit && (
-              <span className="flex items-center gap-1 text-xs text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full">
+              <span className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-amber-50 px-2 py-0.5 text-xs text-amber-600">
                 <EyeOff size={12} /> {t('Read-only')}
               </span>
             )}
 
             {isOwner && (
               <button onClick={() => setShowMembers(true)}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-600 hover:bg-gray-200 transition-colors">
+                      className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-gray-100 px-2 py-1 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-200 sm:px-2.5">
                 <UserPlus size={13} /> {t('Members')}
               </button>
             )}
@@ -304,12 +304,12 @@ export function Editor() {
             {/* Publish button (owner only) */}
             {isOwner && canvas.visibility !== 'published' && (
               <button onClick={handlePublish} disabled={publishing}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition-colors disabled:opacity-50">
+                      className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-md bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-100 disabled:opacity-50 sm:px-2.5">
                 <Globe size={13} /> {t(publishing ? 'Publishing...' : 'Publish')}
               </button>
             )}
             {canvas.visibility === 'published' && (
-              <span className="text-xs text-green-600 bg-green-50 px-2 py-0.5 rounded-full flex items-center gap-1">
+              <span className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-green-50 px-2 py-0.5 text-xs text-green-600">
                 <Globe size={12} /> {t('Published')}
               </span>
             )}
