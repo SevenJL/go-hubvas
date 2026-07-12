@@ -18,7 +18,7 @@ export function LanguageToggle({ compact = false, className = '' }: LanguageTogg
       title={label}
       aria-label={label}
     >
-      <Languages size={16} />
+      <Languages size={16} aria-hidden="true" />
       {!compact && <span className="text-xs">{language === 'en' ? '中文' : 'EN'}</span>}
     </button>
   );
