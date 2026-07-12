@@ -11,14 +11,14 @@ import (
 
 // TokenValidator is the minimal JWT validation interface.
 type TokenValidator interface {
-	ValidateAccessToken(tokenString string) (identity.UserID, error)
+	ValidateAccessToken(tokenString string) (identity.AccessIdentity, error)
 }
 
 // AuthMiddleware validates JWT tokens and injects the user ID into the context.
 func AuthMiddleware(tokenSvc TokenValidator) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
+		token, ok := bearerToken(c.GetHeader("Authorization"))
+		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"code":    http.StatusUnauthorized,
 				"message": "missing or invalid authorization header",
@@ -26,8 +26,7 @@ func AuthMiddleware(tokenSvc TokenValidator) gin.HandlerFunc {
 			return
 		}
 
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		userID, err := tokenSvc.ValidateAccessToken(token)
+		access, err := tokenSvc.ValidateAccessToken(token)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"code":    http.StatusUnauthorized,
@@ -37,21 +36,23 @@ func AuthMiddleware(tokenSvc TokenValidator) gin.HandlerFunc {
 		}
 
 		// Inject into Gin context for downstream handlers.
-		c.Set("userID", userID)
+		c.Set("userID", access.UserID)
+		c.Set("securityVersion", access.SecurityVersion)
 		c.Next()
 	}
 }
 
 // OptionalAuthMiddleware authenticates a request when a Bearer token is present.
 // Requests without credentials remain anonymous, while invalid credentials are rejected.
-func OptionalAuthMiddleware(tokenSvc TokenValidator) gin.HandlerFunc {
+func OptionalAuthMiddleware(tokenSvc TokenValidator, lookups ...AccountLookup) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
+		if strings.TrimSpace(authHeader) == "" {
 			c.Next()
 			return
 		}
-		if !strings.HasPrefix(authHeader, "Bearer ") {
+		token, ok := bearerToken(authHeader)
+		if !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"code":    http.StatusUnauthorized,
 				"message": "invalid authorization header",
@@ -59,8 +60,7 @@ func OptionalAuthMiddleware(tokenSvc TokenValidator) gin.HandlerFunc {
 			return
 		}
 
-		token := strings.TrimPrefix(authHeader, "Bearer ")
-		userID, err := tokenSvc.ValidateAccessToken(token)
+		access, err := tokenSvc.ValidateAccessToken(token)
 		if err != nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"code":    http.StatusUnauthorized,
@@ -69,7 +69,19 @@ func OptionalAuthMiddleware(tokenSvc TokenValidator) gin.HandlerFunc {
 			return
 		}
 
-		c.Set("userID", userID)
+		if len(lookups) > 0 && lookups[0] != nil {
+			user, lookupErr := lookups[0].FindByID(c.Request.Context(), access.UserID)
+			if lookupErr != nil || user == nil || access.SecurityVersion != user.SecurityVersion() {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": http.StatusUnauthorized, "message": "access token has been revoked"})
+				return
+			}
+			if !user.IsActive() {
+				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "message": "account is suspended"})
+				return
+			}
+		}
+		c.Set("userID", access.UserID)
+		c.Set("securityVersion", access.SecurityVersion)
 		c.Next()
 	}
 }
@@ -97,7 +109,7 @@ func ActiveAccountMiddleware(users AccountLookup) gin.HandlerFunc {
 			return
 		}
 		user, err := users.FindByID(c.Request.Context(), GetUserID(c))
-		if err != nil {
+		if err != nil || user == nil {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": http.StatusUnauthorized, "message": "account no longer exists"})
 			return
 		}
@@ -105,6 +117,20 @@ func ActiveAccountMiddleware(users AccountLookup) gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "message": "account is suspended"})
 			return
 		}
+		version, ok := c.Get("securityVersion")
+		tokenVersion, versionOK := version.(int64)
+		if !ok || !versionOK || tokenVersion != user.SecurityVersion() {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": http.StatusUnauthorized, "message": "access token has been revoked"})
+			return
+		}
 		c.Next()
 	}
+}
+
+func bearerToken(header string) (string, bool) {
+	parts := strings.Fields(header)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") || parts[1] == "" {
+		return "", false
+	}
+	return parts[1], true
 }

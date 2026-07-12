@@ -120,7 +120,7 @@ func (h *CommunityHandler) PostComment(c *gin.Context) {
 
 	comment, err := h.appSvc.PostComment(c.Request.Context(), canvas.CanvasID(id), identity.UserID(userID), req)
 	if err != nil {
-		response.Error(c, 400, "comment_failed", err.Error())
+		socialError(c, err)
 		return
 	}
 	response.Created(c, comment)

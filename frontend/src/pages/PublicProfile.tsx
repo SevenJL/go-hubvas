@@ -5,7 +5,7 @@ import { Layout } from '../components/layout/Layout';
 import { Avatar, Button, ErrorState, PageLoader, useToast } from '../components/ui';
 import { FeedCard } from '../components/community/FeedCard';
 import { socialService } from '../services/social';
-import { useAuth } from '../store/AuthContext';
+import { useAuth } from '../store/authStore';
 import type { Actor, PublicProfile, PublishedCanvas } from '../types';
 import { useI18n } from '../i18n';
 

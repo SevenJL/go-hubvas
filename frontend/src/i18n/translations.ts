@@ -115,6 +115,7 @@ const zh: Record<string, string> = {
   'Sign in to interact with community canvases.': '登录后才能与社区画布互动。',
   'Could not update like': '无法更新点赞状态',
   'Could not post comment': '无法发布评论',
+  'The comment you were replying to is no longer available. Please select another comment.': '你回复的评论已不存在，请重新选择评论。',
   'Comment posted': '评论已发布',
   'Comments ({count})': '评论（{count}）',
   'Load more comments': '加载更多评论',

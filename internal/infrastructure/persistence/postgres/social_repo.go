@@ -263,7 +263,7 @@ func (r *SocialRepo) SetUserStatus(ctx context.Context, admin, id identity.UserI
 		return err
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `UPDATE users SET status=$1,updated_at=now() WHERE id=$2`, status, id)
+	tag, err := tx.Exec(ctx, `UPDATE users SET status=$1,security_version=security_version+CASE WHEN status<>$1 THEN 1 ELSE 0 END,updated_at=now() WHERE id=$2`, status, id)
 	if err != nil {
 		return err
 	}

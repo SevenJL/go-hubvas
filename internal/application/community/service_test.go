@@ -2,12 +2,14 @@ package community
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	canvasDomain "github.com/hubvas/internal/domain/canvas"
 	communityDomain "github.com/hubvas/internal/domain/community"
 	"github.com/hubvas/internal/domain/identity"
+	"github.com/hubvas/internal/domain/shared"
 )
 
 type fixedIDGenerator struct{ id int64 }
@@ -15,8 +17,10 @@ type fixedIDGenerator struct{ id int64 }
 func (g fixedIDGenerator) NextID() int64 { return g.id }
 
 type communityRepositoryStub struct {
-	published []*communityDomain.PublishedCanvas
-	comments  []*communityDomain.Comment
+	published      []*communityDomain.PublishedCanvas
+	comments       []*communityDomain.Comment
+	findCommentErr error
+	saveCommentErr error
 }
 
 func (r *communityRepositoryStub) SavePublished(context.Context, *communityDomain.PublishedCanvas) error {
@@ -44,9 +48,12 @@ func (r *communityRepositoryStub) CountLikes(context.Context, canvasDomain.Canva
 	return 0, nil
 }
 func (r *communityRepositoryStub) SaveComment(context.Context, *communityDomain.Comment) error {
-	return nil
+	return r.saveCommentErr
 }
 func (r *communityRepositoryStub) FindComment(_ context.Context, id communityDomain.CommentID) (*communityDomain.Comment, error) {
+	if r.findCommentErr != nil {
+		return nil, r.findCommentErr
+	}
 	for _, c := range r.comments {
 		if c.ID() == id {
 			return c, nil
@@ -73,6 +80,23 @@ func (r *communityRepositoryStub) CountForks(context.Context, canvasDomain.Canva
 func (r *communityRepositoryStub) SearchByTags(context.Context, []string, communityDomain.Pagination) ([]*communityDomain.PublishedCanvas, int64, error) {
 	return nil, 0, nil
 }
+
+type canvasRepositoryStub struct {
+	canvas *canvasDomain.Canvas
+	err    error
+}
+
+func (r *canvasRepositoryStub) Save(context.Context, *canvasDomain.Canvas) error { return nil }
+func (r *canvasRepositoryStub) FindByID(context.Context, canvasDomain.CanvasID) (*canvasDomain.Canvas, error) {
+	return r.canvas, r.err
+}
+func (r *canvasRepositoryStub) FindByOwner(context.Context, identity.UserID) ([]*canvasDomain.Canvas, error) {
+	return nil, nil
+}
+func (r *canvasRepositoryStub) FindByMember(context.Context, identity.UserID) ([]*canvasDomain.Canvas, error) {
+	return nil, nil
+}
+func (r *canvasRepositoryStub) Delete(context.Context, canvasDomain.CanvasID) error { return nil }
 
 type userLookupStub struct {
 	users map[identity.UserID]*identity.User
@@ -129,5 +153,54 @@ func TestGetCommentsPopulatesAuthorNames(t *testing.T) {
 	}
 	if total != 1 || len(comments) != 1 || comments[0].AuthorName != "alice" {
 		t.Fatalf("unexpected comments response: total=%d comments=%#v", total, comments)
+	}
+}
+
+func publishedCanvasAggregate(id canvasDomain.CanvasID, owner identity.UserID) *canvasDomain.Canvas {
+	return canvasDomain.ReconstituteCanvas(id, owner, "published", "", canvasDomain.VisibilityPublished, nil, nil, time.Now(), time.Now())
+}
+
+func TestPostCommentReturnsContextualErrorForMissingParent(t *testing.T) {
+	canvasID := canvasDomain.CanvasID(7)
+	parentID := int64(999)
+	repo := &communityRepositoryStub{findCommentErr: shared.NewDomainError(shared.ErrNotFound, "entity not found")}
+	canvases := &canvasRepositoryStub{canvas: publishedCanvasAggregate(canvasID, 1)}
+	users := &userLookupStub{users: map[identity.UserID]*identity.User{}, calls: map[identity.UserID]int{}}
+	svc := NewCommunityApplicationService(repo, canvases, users, fixedIDGenerator{id: 10})
+
+	_, err := svc.PostComment(context.Background(), canvasID, 2, NewCommentRequest{Content: "reply", ParentCommentID: &parentID})
+	if !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("expected not found, got %v", err)
+	}
+	var domainErr *shared.DomainError
+	if !errors.As(err, &domainErr) || domainErr.Message != "parent comment not found" {
+		t.Fatalf("expected contextual parent error, got %v", err)
+	}
+}
+
+func TestPostCommentRejectsNilParentFromRepository(t *testing.T) {
+	canvasID := canvasDomain.CanvasID(7)
+	parentID := int64(999)
+	repo := &communityRepositoryStub{}
+	canvases := &canvasRepositoryStub{canvas: publishedCanvasAggregate(canvasID, 1)}
+	users := &userLookupStub{users: map[identity.UserID]*identity.User{}, calls: map[identity.UserID]int{}}
+	svc := NewCommunityApplicationService(repo, canvases, users, fixedIDGenerator{id: 10})
+
+	_, err := svc.PostComment(context.Background(), canvasID, 2, NewCommentRequest{Content: "reply", ParentCommentID: &parentID})
+	if !errors.Is(err, shared.ErrNotFound) {
+		t.Fatalf("expected not found for nil parent, got %v", err)
+	}
+}
+
+func TestPostCommentReturnsUnauthorizedWhenTokenUserNoLongerExists(t *testing.T) {
+	canvasID := canvasDomain.CanvasID(7)
+	repo := &communityRepositoryStub{}
+	canvases := &canvasRepositoryStub{canvas: publishedCanvasAggregate(canvasID, 1)}
+	users := &userLookupStub{users: map[identity.UserID]*identity.User{}, calls: map[identity.UserID]int{}}
+	svc := NewCommunityApplicationService(repo, canvases, users, fixedIDGenerator{id: 10})
+
+	_, err := svc.PostComment(context.Background(), canvasID, 2, NewCommentRequest{Content: "comment"})
+	if !errors.Is(err, shared.ErrUnauthorized) {
+		t.Fatalf("expected unauthorized, got %v", err)
 	}
 }

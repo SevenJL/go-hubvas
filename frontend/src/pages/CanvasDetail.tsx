@@ -3,9 +3,9 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { ArrowLeft, Flag, GitFork, Heart, MessageCircle, PencilLine, Reply, Send, Trash2 } from 'lucide-react';
 import { Layout } from '../components/layout/Layout';
 import { canvasService } from '../services/canvas';
-import { communityService } from '../services/community';
+import { communityService, CommunityRequestError } from '../services/community';
 import { socialService } from '../services/social';
-import { useAuth } from '../store/AuthContext';
+import { useAuth } from '../store/authStore';
 import { CanvasThumbnail } from '../components/canvas/CanvasThumbnail';
 import { Avatar, Button, ErrorState, InlineLoader, useToast } from '../components/ui';
 import type { CanvasInfo, CommentInfo, PublishedCanvas } from '../types';
@@ -59,6 +59,19 @@ export function CanvasDetail() {
 
   useEffect(() => { void load(); }, [load, user?.id]);
 
+  useEffect(() => {
+    setReplyTo(undefined);
+    setNewComment('');
+  }, [canvasId]);
+
+  useEffect(() => {
+    if (!replyTo) return;
+    const target = comments.find(comment => comment.id === replyTo);
+    if (target && !target.deleted && target.moderation_status === 'visible') return;
+    setReplyTo(undefined);
+    setNewComment('');
+  }, [comments, replyTo]);
+
   const requireLogin = () => {
     if (user) return true;
     toast.info({ title: t('Sign in required'), message: t('Sign in to interact with community canvases.') });
@@ -91,7 +104,17 @@ export function CanvasDetail() {
       setReplyTo(undefined);
       toast.success(t('Comment posted'));
     } catch (err) {
-      toast.error({ title: t('Could not post comment'), message: err instanceof Error ? err.message : t('Please try again.') });
+      const unavailableReply = Boolean(replyTo && err instanceof CommunityRequestError && (err.status === 404 || err.status === 409));
+      if (unavailableReply) {
+        setReplyTo(undefined);
+        setNewComment('');
+      }
+      toast.error({
+        title: t('Could not post comment'),
+        message: unavailableReply
+          ? t('The comment you were replying to is no longer available. Please select another comment.')
+          : err instanceof Error ? err.message : t('Please try again.'),
+      });
     } finally {
       setCommenting(false);
     }

@@ -2,6 +2,7 @@ package community
 
 import (
 	"context"
+	"errors"
 
 	canvasDomain "github.com/hubvas/internal/domain/canvas"
 	communityDomain "github.com/hubvas/internal/domain/community"
@@ -170,6 +171,9 @@ func (s *CommunityApplicationService) GetLikeStatus(ctx context.Context, canvasI
 func (s *CommunityApplicationService) PostComment(ctx context.Context, canvasID canvasDomain.CanvasID, authorID identity.UserID, req NewCommentRequest) (*CommentDTO, error) {
 	canvas, err := s.canvasRepo.FindByID(ctx, canvasID)
 	if err != nil {
+		if errors.Is(err, shared.ErrNotFound) {
+			return nil, shared.NewDomainError(shared.ErrNotFound, "canvas not found")
+		}
 		return nil, err
 	}
 	if !canvas.Visibility().IsPublished() {
@@ -179,7 +183,13 @@ func (s *CommunityApplicationService) PostComment(ctx context.Context, canvasID 
 	if req.ParentCommentID != nil {
 		p, err := s.communityRepo.FindComment(ctx, communityDomain.CommentID(*req.ParentCommentID))
 		if err != nil {
+			if errors.Is(err, shared.ErrNotFound) {
+				return nil, shared.NewDomainError(shared.ErrNotFound, "parent comment not found")
+			}
 			return nil, err
+		}
+		if p == nil {
+			return nil, shared.NewDomainError(shared.ErrNotFound, "parent comment not found")
 		}
 		if p.CanvasID() != canvasID {
 			return nil, shared.NewDomainError(shared.ErrInvalidArgument, "parent comment belongs to another canvas")
@@ -199,7 +209,13 @@ func (s *CommunityApplicationService) PostComment(ctx context.Context, canvasID 
 	}
 	user, err := s.userLookup.FindByID(ctx, authorID)
 	if err != nil {
+		if errors.Is(err, shared.ErrNotFound) {
+			return nil, shared.NewDomainError(shared.ErrUnauthorized, "authenticated user no longer exists")
+		}
 		return nil, err
+	}
+	if user == nil {
+		return nil, shared.NewDomainError(shared.ErrUnauthorized, "authenticated user no longer exists")
 	}
 	if err = s.communityRepo.SaveComment(ctx, comment); err != nil {
 		return nil, err

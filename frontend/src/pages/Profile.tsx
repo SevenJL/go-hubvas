@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type DragEvent, type FormEvent } from 'rea
 import { Camera, Globe2, KeyRound, Laptop, ShieldCheck, Trash2, UploadCloud, X } from 'lucide-react';
 import { Layout } from '../components/layout/Layout';
 import { Avatar, Button, useToast } from '../components/ui';
-import { useAuth } from '../store/AuthContext';
+import { useAuth } from '../store/authStore';
 import { authService } from '../services/auth';
 import { mediaService, type Crop } from '../services/media';
 import { useI18n } from '../i18n';

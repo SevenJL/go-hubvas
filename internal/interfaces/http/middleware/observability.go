@@ -2,10 +2,13 @@ package middleware
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -105,4 +108,39 @@ func requestIDValue(c *gin.Context) string {
 	value, _ := c.Get(RequestIDKey)
 	id, _ := value.(string)
 	return id
+}
+
+// MetricsAuth protects operational metrics with a bearer token. Development
+// may leave the token empty, while production configuration requires one.
+func MetricsAuth(expected string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if expected == "" {
+			c.Next()
+			return
+		}
+		provided, ok := bearerToken(c.GetHeader("Authorization"))
+		expectedHash := sha256.Sum256([]byte(expected))
+		providedHash := sha256.Sum256([]byte(provided))
+		if !ok || subtle.ConstantTimeCompare(expectedHash[:], providedHash[:]) != 1 {
+			c.Header("WWW-Authenticate", `Bearer realm="metrics"`)
+			c.AbortWithStatus(http.StatusUnauthorized)
+			return
+		}
+		c.Next()
+	}
+}
+
+// SecurityHeaders applies conservative browser protections to API responses.
+func SecurityHeaders() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "DENY")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Header("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		c.Header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'")
+		if c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
+			c.Header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		c.Next()
+	}
 }

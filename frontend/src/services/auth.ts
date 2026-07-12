@@ -12,6 +12,16 @@ export interface LoginInput {
   password: string;
 }
 
+export class AuthRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'AuthRequestError';
+    this.status = status;
+  }
+}
+
 export const authService = {
   /**
    * Register a new account.
@@ -47,7 +57,7 @@ export const authService = {
   async me(): Promise<User> {
     const res = await api.get<User>('/auth/me');
     if (res.code !== 0 || !res.data) {
-      throw new Error(res.message || 'Not authenticated');
+      throw new AuthRequestError(res.message || 'Not authenticated', res.code);
     }
     return res.data;
   },

@@ -89,7 +89,7 @@ func (*userRepoStub) ExistsByEmail(context.Context, string) (bool, error)       
 func (*userRepoStub) Delete(context.Context, identity.UserID) error                  { return nil }
 
 func socialUser(id identity.UserID, role string) *identity.User {
-	return identity.ReconstituteUserProfile(id, "user", "user@example.com", "hash", "User", "", "", "", "", 0, role, "active", time.Now(), time.Now())
+	return identity.ReconstituteUserProfile(id, "user", "user@example.com", "hash", "User", "", "", "", "", 0, 1, role, "active", time.Now(), time.Now())
 }
 
 func TestFollowAndBlockRejectSelf(t *testing.T) {

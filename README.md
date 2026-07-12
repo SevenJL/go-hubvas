@@ -153,7 +153,7 @@ docker compose -f deployments/docker/docker-compose.yaml \
 make docker-down
 ```
 
-开发模式固定读取 `deployments/docker/.env.dev`。生产部署应复制 `deployments/docker/.env.example` 为受保护的 `.env`，填写不可变 `IMAGE_TAG`、数据库/Redis/NATS/对象存储凭据以及至少 32 字符的 `JWT_ACCESS_SECRET`。生产配置缺失或仍使用开发凭据时，API 与 WS 会直接拒绝启动。
+开发模式固定读取 `deployments/docker/.env.dev`。生产部署应复制 `deployments/docker/.env.example` 为受保护的 `.env`，填写不可变 `IMAGE_TAG`、数据库/Redis/NATS/对象存储凭据以及至少 32 字符的 `JWT_ACCESS_SECRET`、`METRICS_TOKEN`。生产配置缺失或仍使用开发凭据时，API 与 WS 会直接拒绝启动。
 
 ### 方式二：本地开发
 
@@ -411,10 +411,11 @@ npm run build
 
 ## 生产部署安全基线
 
-- Access JWT 包含 issuer、audience、subject、`jti`、`iat`、`nbf`、`exp` 和 `typ=at+jwt`，并严格限制 HS256。
+- Access JWT 包含 issuer、audience、subject、`jti`、`iat`、`nbf`、`exp`、`sv`（security version）和 `typ=at+jwt`，并严格限制 HS256；修改密码、全部退出和管理员变更账号状态会立即撤销旧 Access Token。
 - Refresh Token 是 32 字节随机不透明凭据，仅将 SHA-256 哈希保存在 PostgreSQL；每次刷新都会轮换，检测到旧令牌复用时撤销整个会话族。
 - Refresh Token 只写入 `HttpOnly` Cookie；前端不再将认证令牌保存到 localStorage，并对并发 401 只发起一次刷新请求。
 - `/health` 仅表示进程存活，`/ready` 检查 PostgreSQL、Redis、NATS 和对象存储；容器编排仅把 readiness 成功的实例加入服务。
+- `/metrics` 在生产环境必须使用至少 32 字符的 Bearer Token 保护：`curl -H "Authorization: Bearer $METRICS_TOKEN" http://localhost:8080/metrics`。
 - API/WS 使用读头、读写、空闲和优雅关闭超时；运行镜像使用非 root 用户。
 - `TRUSTED_PROXIES` 必须与实际反向代理网段一致，否则客户端 IP、审计信息和按 IP 限流可能不准确。
 - 生产 Compose 强制指定不可变 `IMAGE_TAG`，禁止默默回退到 `latest`。

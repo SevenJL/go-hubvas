@@ -32,22 +32,31 @@ func idParam(c *gin.Context, name string) (identity.UserID, bool) {
 	}
 	return identity.UserID(v), true
 }
+func publicDomainErrorMessage(err error) string {
+	var domainErr *shared.DomainError
+	if errors.As(err, &domainErr) && domainErr.Message != "" {
+		return domainErr.Message
+	}
+	return "request failed"
+}
+
 func socialError(c *gin.Context, err error) {
+	message := publicDomainErrorMessage(err)
 	switch {
 	case errors.Is(err, shared.ErrInvalidArgument):
-		response.BadRequest(c, err.Error())
+		response.BadRequest(c, message)
 	case errors.Is(err, shared.ErrUnauthorized):
-		response.Unauthorized(c, err.Error())
+		response.Unauthorized(c, message)
 	case errors.Is(err, shared.ErrForbidden):
-		response.Forbidden(c, err.Error())
+		response.Forbidden(c, message)
 	case errors.Is(err, shared.ErrNotFound):
-		response.NotFound(c, err.Error())
+		response.NotFound(c, message)
 	case errors.Is(err, shared.ErrAlreadyExists), errors.Is(err, shared.ErrConflict):
-		response.Conflict(c, err.Error())
+		response.Conflict(c, message)
 	case errors.Is(err, shared.ErrLimitExceeded):
-		response.BadRequest(c, err.Error())
+		response.Error(c, 429, "rate_limited", message)
 	default:
-		response.InternalError(c, "request failed")
+		response.InternalError(c, message)
 	}
 }
 func (h *SocialHandler) Profile(c *gin.Context) {

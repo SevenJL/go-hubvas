@@ -20,7 +20,7 @@ func (r *AccountRepo) Register(ctx context.Context, user *identity.User, session
 	}
 	defer tx.Rollback(ctx)
 	var id int64
-	err = tx.QueryRow(ctx, saveInsertSQL, user.Username(), user.Email(), user.PasswordHash(), user.DisplayName(), user.Bio(), user.Website(), nullIfEmpty(user.AvatarURL()), nullIfEmpty(user.AvatarKey()), user.AvatarVersion(), user.AccountRole(), user.Status(), user.CreatedAt(), user.UpdatedAt()).Scan(&id)
+	err = tx.QueryRow(ctx, saveInsertSQL, user.Username(), user.Email(), user.PasswordHash(), user.DisplayName(), user.Bio(), user.Website(), nullIfEmpty(user.AvatarURL()), nullIfEmpty(user.AvatarKey()), user.AvatarVersion(), user.SecurityVersion(), user.AccountRole(), user.Status(), user.CreatedAt(), user.UpdatedAt()).Scan(&id)
 	if err != nil {
 		return mapPgError(err)
 	}
@@ -39,14 +39,33 @@ func (r *AccountRepo) ChangePasswordAndRevokeSessions(ctx context.Context, user 
 		return err
 	}
 	defer tx.Rollback(ctx)
-	tag, err := tx.Exec(ctx, `UPDATE users SET password_hash=$1,updated_at=$2 WHERE id=$3`, user.PasswordHash(), user.UpdatedAt(), user.ID())
+	tag, err := tx.Exec(ctx, `UPDATE users SET password_hash=$1,security_version=$2,updated_at=$3 WHERE id=$4 AND security_version=$5`, user.PasswordHash(), user.SecurityVersion(), user.UpdatedAt(), user.ID(), user.SecurityVersion()-1)
+	if err != nil {
+		return mapPgError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return shared.NewDomainError(shared.ErrConflict, "password was changed by another request")
+	}
+	if _, err = tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1 AND revoked_at IS NULL`, user.ID()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (r *AccountRepo) RevokeAllAccess(ctx context.Context, userID identity.UserID) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE users SET security_version=security_version+1,updated_at=now() WHERE id=$1`, userID)
 	if err != nil {
 		return mapPgError(err)
 	}
 	if tag.RowsAffected() == 0 {
 		return shared.NewDomainError(shared.ErrNotFound, "user not found")
 	}
-	if _, err = tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1 AND revoked_at IS NULL`, user.ID()); err != nil {
+	if _, err = tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1 AND revoked_at IS NULL`, userID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

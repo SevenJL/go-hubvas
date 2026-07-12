@@ -3,33 +3,34 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/hubvas/internal/domain/identity"
 	"github.com/hubvas/internal/domain/shared"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"time"
 )
 
 type UserRepo struct{ pool *pgxpool.Pool }
 
 func NewUserRepo(pool *pgxpool.Pool) *UserRepo { return &UserRepo{pool: pool} }
 
-const userColumns = `id, username, email, password_hash, display_name, bio, website, avatar_url, avatar_key, avatar_version, account_role, status, created_at, updated_at`
-const saveInsertSQL = `INSERT INTO users (username,email,password_hash,display_name,bio,website,avatar_url,avatar_key,avatar_version,account_role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`
-const saveUpdateSQL = `UPDATE users SET email=$1,password_hash=$2,display_name=$3,bio=$4,website=$5,avatar_url=$6,avatar_key=$7,avatar_version=$8,account_role=$9,status=$10,updated_at=$11 WHERE id=$12`
+const userColumns = `id, username, email, password_hash, display_name, bio, website, avatar_url, avatar_key, avatar_version, security_version, account_role, status, created_at, updated_at`
+const saveInsertSQL = `INSERT INTO users (username,email,password_hash,display_name,bio,website,avatar_url,avatar_key,avatar_version,security_version,account_role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id`
+const saveUpdateSQL = `UPDATE users SET display_name=$1,bio=$2,website=$3,updated_at=$4 WHERE id=$5`
 
 func (r *UserRepo) Save(ctx context.Context, u *identity.User) error {
 	if u.ID() == 0 {
 		var id int64
-		err := r.pool.QueryRow(ctx, saveInsertSQL, u.Username(), u.Email(), u.PasswordHash(), u.DisplayName(), u.Bio(), u.Website(), nullIfEmpty(u.AvatarURL()), nullIfEmpty(u.AvatarKey()), u.AvatarVersion(), u.AccountRole(), u.Status(), u.CreatedAt(), u.UpdatedAt()).Scan(&id)
+		err := r.pool.QueryRow(ctx, saveInsertSQL, u.Username(), u.Email(), u.PasswordHash(), u.DisplayName(), u.Bio(), u.Website(), nullIfEmpty(u.AvatarURL()), nullIfEmpty(u.AvatarKey()), u.AvatarVersion(), u.SecurityVersion(), u.AccountRole(), u.Status(), u.CreatedAt(), u.UpdatedAt()).Scan(&id)
 		if err != nil {
 			return mapPgError(err)
 		}
 		u.SetID(identity.UserID(id))
 		return nil
 	}
-	tag, err := r.pool.Exec(ctx, saveUpdateSQL, u.Email(), u.PasswordHash(), u.DisplayName(), u.Bio(), u.Website(), nullIfEmpty(u.AvatarURL()), nullIfEmpty(u.AvatarKey()), u.AvatarVersion(), u.AccountRole(), u.Status(), u.UpdatedAt(), u.ID())
+	tag, err := r.pool.Exec(ctx, saveUpdateSQL, u.DisplayName(), u.Bio(), u.Website(), u.UpdatedAt(), u.ID())
 	if err != nil {
 		return mapPgError(err)
 	}
@@ -71,13 +72,13 @@ func (r *UserRepo) findOneBy(ctx context.Context, q string, arg any) (*identity.
 	var id int64
 	var username, email, hash, display, bio, website, role, status string
 	var avatarURL, avatarKey *string
-	var version int64
+	var version, securityVersion int64
 	var created, updated time.Time
-	err := r.pool.QueryRow(ctx, q, arg).Scan(&id, &username, &email, &hash, &display, &bio, &website, &avatarURL, &avatarKey, &version, &role, &status, &created, &updated)
+	err := r.pool.QueryRow(ctx, q, arg).Scan(&id, &username, &email, &hash, &display, &bio, &website, &avatarURL, &avatarKey, &version, &securityVersion, &role, &status, &created, &updated)
 	if err != nil {
 		return nil, mapPgError(err)
 	}
-	return identity.ReconstituteUserProfile(identity.UserID(id), username, email, hash, display, bio, website, derefString(avatarURL), derefString(avatarKey), version, role, status, created, updated), nil
+	return identity.ReconstituteUserProfile(identity.UserID(id), username, email, hash, display, bio, website, derefString(avatarURL), derefString(avatarKey), version, securityVersion, role, status, created, updated), nil
 }
 
 func mapPgError(err error) error {

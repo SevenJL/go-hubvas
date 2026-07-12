@@ -1,6 +1,16 @@
 import { api } from './api';
 import type { FeedResponse, CommentInfo, CommentListResponse, LikeStatus, PublishedCanvas } from '../types';
 
+export class CommunityRequestError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'CommunityRequestError';
+    this.status = status;
+  }
+}
+
 export const communityService = {
   async browse(params: {
     q?: string;
@@ -47,7 +57,7 @@ export const communityService = {
 
   async postComment(canvasId: string, content: string, parentCommentId?: string): Promise<CommentInfo> {
     const res = await api.postIdempotent<CommentInfo>(`/canvases/${canvasId}/comments`, { content, parent_comment_id: parentCommentId });
-    if (res.code !== 0 || !res.data) throw new Error(res.message || 'Failed to post comment');
+    if (res.code !== 0 || !res.data) throw new CommunityRequestError(res.message || 'Failed to post comment', res.code);
     return res.data;
   },
 

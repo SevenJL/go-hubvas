@@ -28,38 +28,45 @@ func (r *AuthSessionRepo) Create(ctx context.Context, s appauth.RefreshSession) 
 	return mapPgError(err)
 }
 
-func (r *AuthSessionRepo) Rotate(ctx context.Context, currentHash []byte, next appauth.RefreshSession) (identity.UserID, error) {
+func (r *AuthSessionRepo) Rotate(ctx context.Context, currentHash []byte, next appauth.RefreshSession) (identity.UserID, int64, error) {
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer tx.Rollback(ctx)
 	var id, family string
 	var userID identity.UserID
+	var securityVersion int64
 	var expires time.Time
 	var revoked *time.Time
-	err = tx.QueryRow(ctx, `SELECT id,family_id,user_id,expires_at,revoked_at FROM auth_sessions WHERE token_hash=$1 FOR UPDATE`, currentHash).Scan(&id, &family, &userID, &expires, &revoked)
+	err = tx.QueryRow(ctx, `
+		SELECT s.id,s.family_id,s.user_id,s.expires_at,s.revoked_at,u.security_version
+		FROM auth_sessions s
+		JOIN users u ON u.id=s.user_id
+		WHERE s.token_hash=$1
+		FOR UPDATE OF s
+	`, currentHash).Scan(&id, &family, &userID, &expires, &revoked, &securityVersion)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return 0, shared.NewDomainError(shared.ErrUnauthorized, "invalid refresh session")
+			return 0, 0, shared.NewDomainError(shared.ErrUnauthorized, "invalid refresh session")
 		}
-		return 0, mapPgError(err)
+		return 0, 0, mapPgError(err)
 	}
 	if revoked != nil {
 		if _, e := tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=COALESCE(revoked_at,now()) WHERE family_id=$1`, family); e != nil {
-			return 0, e
+			return 0, 0, e
 		}
 		if e := tx.Commit(ctx); e != nil {
-			return 0, e
+			return 0, 0, e
 		}
-		return 0, shared.NewDomainError(shared.ErrUnauthorized, "refresh token reuse detected; session family revoked")
+		return 0, 0, shared.NewDomainError(shared.ErrUnauthorized, "refresh token reuse detected; session family revoked")
 	}
 	if time.Now().After(expires) {
 		_, _ = tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=now() WHERE id=$1`, id)
 		if e := tx.Commit(ctx); e != nil {
-			return 0, e
+			return 0, 0, e
 		}
-		return 0, shared.NewDomainError(shared.ErrUnauthorized, "refresh session expired")
+		return 0, 0, shared.NewDomainError(shared.ErrUnauthorized, "refresh session expired")
 	}
 	next.UserID = userID
 	next.FamilyID = family
@@ -68,15 +75,15 @@ func (r *AuthSessionRepo) Rotate(ctx context.Context, currentHash []byte, next a
 	// records until every credential in the family is unusable.
 	next.ExpiresAt = expires
 	if _, err = tx.Exec(ctx, `UPDATE auth_sessions SET revoked_at=now(),last_used_at=now(),replaced_by_id=$1 WHERE id=$2`, next.ID, id); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO auth_sessions(id,family_id,user_id,token_hash,user_agent,ip_address,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7)`, next.ID, family, userID, next.TokenHash, next.Metadata.UserAgent, nullableIP(next.Metadata.IPAddress), next.ExpiresAt); err != nil {
-		return 0, mapPgError(err)
+		return 0, 0, mapPgError(err)
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return userID, nil
+	return userID, securityVersion, nil
 }
 
 func (r *AuthSessionRepo) Revoke(ctx context.Context, hash []byte) error {

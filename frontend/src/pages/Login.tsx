@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAuth } from '../store/AuthContext';
+import { useAuth } from '../store/authStore';
 import { Palette, Mail, Key, AlertCircle } from 'lucide-react';
 import { useI18n } from '../i18n';
 import { LanguageToggle } from '../components/ui';

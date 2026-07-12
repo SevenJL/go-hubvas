@@ -1,6 +1,7 @@
 import { Suspense, type ComponentType, type ReactNode } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { AuthProvider, useAuth } from './store/AuthContext';
+import { useAuth } from './store/authStore';
+import { AuthProvider } from './store/AuthProvider';
 import { PageLoader, ToastProvider } from './components/ui';
 import { I18nProvider, useI18n } from './i18n';
 import { RouteErrorBoundary } from './components/routing/RouteErrorBoundary';

@@ -10,6 +10,7 @@ import (
 type AccountUnitOfWork interface {
 	Register(ctx context.Context, user *identity.User, session RefreshSession) error
 	ChangePasswordAndRevokeSessions(ctx context.Context, user *identity.User) error
+	RevokeAllAccess(ctx context.Context, userID identity.UserID) error
 }
 
 type SessionDTO struct {

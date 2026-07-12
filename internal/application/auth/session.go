@@ -23,7 +23,7 @@ type RefreshSession struct {
 
 type RefreshSessionRepository interface {
 	Create(ctx context.Context, session RefreshSession) error
-	Rotate(ctx context.Context, currentHash []byte, replacement RefreshSession) (identity.UserID, error)
+	Rotate(ctx context.Context, currentHash []byte, replacement RefreshSession) (identity.UserID, int64, error)
 	Revoke(ctx context.Context, tokenHash []byte) error
 	RevokeAll(ctx context.Context, userID identity.UserID) error
 	List(ctx context.Context, userID identity.UserID, currentHash []byte) ([]SessionDTO, error)

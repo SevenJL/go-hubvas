@@ -32,7 +32,7 @@ type Gateway struct {
 // TokenValidator is the minimal interface for JWT validation.
 // It is satisfied by infrastructure/auth.JWTService.
 type TokenValidator interface {
-	ValidateAccessToken(tokenString string) (identity.UserID, error)
+	ValidateAccessToken(tokenString string) (identity.AccessIdentity, error)
 }
 
 // UserLookup resolves the authenticated user's server-authoritative profile.
@@ -79,13 +79,31 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := g.tokenSvc.ValidateAccessToken(token)
+	access, err := g.tokenSvc.ValidateAccessToken(token)
 	if err != nil {
 		http.Error(w, `{"code":"invalid_token","message":"invalid or expired token"}`, http.StatusUnauthorized)
 		return
 	}
 
-	// 3. Validate canvas access.
+	userID := access.UserID
+
+	// 3. Resolve the account before checking resource permissions so revoked or
+	// suspended credentials cannot be used to probe canvas access.
+	user, err := g.userLookup.FindByID(r.Context(), userID)
+	if err != nil || user == nil {
+		http.Error(w, `{"code":"invalid_user","message":"authenticated user no longer exists"}`, http.StatusUnauthorized)
+		return
+	}
+	if !user.IsActive() {
+		http.Error(w, `{"code":"suspended","message":"account is suspended"}`, http.StatusForbidden)
+		return
+	}
+	if access.SecurityVersion != user.SecurityVersion() {
+		http.Error(w, `{"code":"revoked_token","message":"access token has been revoked"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// 4. Validate canvas access.
 	canView, err := g.permissionSvc.CanView(r.Context(), canvas.CanvasID(canvasID), userID)
 	if err != nil || !canView {
 		http.Error(w, `{"code":"forbidden","message":"access denied"}`, http.StatusForbidden)
@@ -101,15 +119,6 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	// A published non-member has view access but no membership role, so remains a read-only viewer.
 
-	user, err := g.userLookup.FindByID(r.Context(), userID)
-	if err != nil {
-		http.Error(w, `{"code":"invalid_user","message":"authenticated user no longer exists"}`, http.StatusUnauthorized)
-		return
-	}
-	if !user.IsActive() {
-		http.Error(w, `{"code":"suspended","message":"account is suspended"}`, http.StatusForbidden)
-		return
-	}
 	if g.throttleSvc != nil {
 		allowed, throttleErr := g.throttleSvc.AllowConnection(r.Context(), userID, collaboration.RoomID(canvasID))
 		if throttleErr != nil {
@@ -122,7 +131,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 4. Upgrade to WebSocket.
+	// 5. Upgrade to WebSocket.
 	options := &websocket.AcceptOptions{InsecureSkipVerify: false}
 	if selectedProtocol != "" {
 		options.Subprotocols = []string{selectedProtocol}
@@ -133,7 +142,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 5. Create a client with server-authoritative identity and permissions.
+	// 6. Create a client with server-authoritative identity and permissions.
 	client := NewClient(
 		conn,
 		userID,

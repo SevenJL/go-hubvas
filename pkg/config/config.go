@@ -31,6 +31,7 @@ type ServerConfig struct {
 	IdleTimeout       time.Duration `yaml:"idle_timeout"`
 	ShutdownTimeout   time.Duration `yaml:"shutdown_timeout"`
 	TrustedProxies    []string      `yaml:"trusted_proxies"`
+	MetricsToken      string        `yaml:"metrics_token"`
 }
 
 type DatabaseConfig struct {

@@ -184,7 +184,7 @@ func main() {
 		rateLimiter = middleware.NewRateLimiter(100, 200)
 	}
 	gin.SetMode(gin.ReleaseMode)
-	router := httpapi.NewRouter(httpapi.RouterConfig{AuthHandler: authHandler, CanvasHandler: canvasHandler, CommunityHandler: communityHandler, HealthHandler: healthHandler, SnapshotHandler: snapshotHandler, SocialHandler: socialHandler, MediaHandler: mediaHandler, TokenSvc: jwtSvc, RateLimiter: rateLimiter, UserLookup: userRepo, TrustedProxies: cfg.Server.TrustedProxies, DBPool: pool})
+	router := httpapi.NewRouter(httpapi.RouterConfig{AuthHandler: authHandler, CanvasHandler: canvasHandler, CommunityHandler: communityHandler, HealthHandler: healthHandler, SnapshotHandler: snapshotHandler, SocialHandler: socialHandler, MediaHandler: mediaHandler, TokenSvc: jwtSvc, RateLimiter: rateLimiter, UserLookup: userRepo, TrustedProxies: cfg.Server.TrustedProxies, DBPool: pool, MetricsToken: cfg.Server.MetricsToken})
 
 	addr := fmt.Sprintf("%s:%d", cfg.Server.APIHost, cfg.Server.APIPort)
 	srv := &http.Server{Addr: addr, Handler: router, ReadHeaderTimeout: cfg.Server.ReadHeaderTimeout, ReadTimeout: cfg.Server.ReadTimeout, WriteTimeout: cfg.Server.WriteTimeout, IdleTimeout: cfg.Server.IdleTimeout}

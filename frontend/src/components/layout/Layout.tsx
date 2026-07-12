@@ -10,7 +10,7 @@ import {
   Shield,
   UserRound,
 } from 'lucide-react';
-import { useAuth } from '../../store/AuthContext';
+import { useAuth } from '../../store/authStore';
 import { LanguageToggle } from '../ui';
 import { Avatar } from '../ui/Avatar';
 import { useNotifications } from '../../hooks/useNotifications';

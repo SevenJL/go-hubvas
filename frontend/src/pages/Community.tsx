@@ -5,7 +5,7 @@ import { FeedCard } from '../components/community/FeedCard';
 import { Button, ErrorState, PageLoader } from '../components/ui';
 import { communityService } from '../services/community';
 import { socialService } from '../services/social';
-import { useAuth } from '../store/AuthContext';
+import { useAuth } from '../store/authStore';
 import type { FeedResponse } from '../types';
 import { useI18n } from '../i18n';
 

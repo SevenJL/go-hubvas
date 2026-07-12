@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { GitFork, Globe, Lock, Plus, Share2, Trash2, Users } from 'lucide-react';
-import { useAuth } from '../store/AuthContext';
+import { useAuth } from '../store/authStore';
 import { canvasService } from '../services/canvas';
 import { Layout } from '../components/layout/Layout';
 import { Button, CanvasGridSkeleton, ConfirmDialog, ErrorState, Input, Modal, useToast } from '../components/ui';

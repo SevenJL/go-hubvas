@@ -3,6 +3,7 @@ package redis
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -95,10 +96,12 @@ func (r *PresenceRepo) GetPresence(ctx context.Context, roomID collaboration.Roo
 	pipe := r.client.Pipeline()
 	cmds := make([]*redis.MapStringStringCmd, len(members))
 	userIDs := make([]identity.UserID, len(members))
+	staleMembers := make([]any, 0)
 
 	for i, uidStr := range members {
 		uid, err := strconv.ParseInt(uidStr, 10, 64)
-		if err != nil {
+		if err != nil || uid <= 0 {
+			staleMembers = append(staleMembers, uidStr)
 			continue
 		}
 		userIDs[i] = identity.UserID(uid)
@@ -106,11 +109,9 @@ func (r *PresenceRepo) GetPresence(ctx context.Context, roomID collaboration.Roo
 	}
 
 	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
-		// If Redis is down, return whatever we have.
-		// In production, this should be handled more gracefully.
+		return nil, fmt.Errorf("load presence details: %w", err)
 	}
 
-	var staleUsers []identity.UserID
 	var results []collaboration.PresenceInfo
 
 	for i, cmd := range cmds {
@@ -121,7 +122,7 @@ func (r *PresenceRepo) GetPresence(ctx context.Context, roomID collaboration.Roo
 		if err != nil || len(fields) == 0 {
 			// Expired or missing — queue for cleanup.
 			if userIDs[i] != 0 {
-				staleUsers = append(staleUsers, userIDs[i])
+				staleMembers = append(staleMembers, int64(userIDs[i]))
 			}
 			continue
 		}
@@ -131,8 +132,10 @@ func (r *PresenceRepo) GetPresence(ctx context.Context, roomID collaboration.Roo
 	}
 
 	// Clean stale entries from the member set.
-	if len(staleUsers) > 0 {
-		go r.cleanStaleMembers(context.Background(), roomID, staleUsers)
+	if len(staleMembers) > 0 {
+		if err := r.cleanStaleMembers(ctx, roomID, staleMembers); err != nil {
+			slog.WarnContext(ctx, "failed to clean stale presence members", "room_id", roomID, "count", len(staleMembers), "error", err)
+		}
 	}
 
 	return results, nil
@@ -174,12 +177,8 @@ func (r *PresenceRepo) GetOnlineCount(ctx context.Context, roomID collaboration.
 
 // ---- cleanStaleMembers ----
 
-func (r *PresenceRepo) cleanStaleMembers(ctx context.Context, roomID collaboration.RoomID, userIDs []identity.UserID) {
-	members := make([]any, len(userIDs))
-	for i, uid := range userIDs {
-		members[i] = int64(uid)
-	}
-	r.client.SRem(ctx, membersKey(roomID), members...)
+func (r *PresenceRepo) cleanStaleMembers(ctx context.Context, roomID collaboration.RoomID, members []any) error {
+	return r.client.SRem(ctx, membersKey(roomID), members...).Err()
 }
 
 // ---- parsePresenceInfo ----

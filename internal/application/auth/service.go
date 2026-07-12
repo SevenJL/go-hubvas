@@ -9,8 +9,7 @@ import (
 )
 
 type TokenService interface {
-	GenerateAccessToken(userID identity.UserID) (string, int64, error)
-	ValidateAccessToken(tokenString string) (identity.UserID, error)
+	GenerateAccessToken(userID identity.UserID, securityVersion int64) (string, int64, error)
 }
 type PasswordService interface {
 	Hash(password string) (string, error)
@@ -30,12 +29,12 @@ func NewAuthApplicationService(userRepo identity.UserRepository, sessions Refres
 	return &AuthApplicationService{userRepo: userRepo, sessions: sessions, accounts: accounts, tokenSvc: tokenSvc, passwordSvc: passwordSvc, refreshTTL: refreshTTL}
 }
 
-func (s *AuthApplicationService) issue(ctx context.Context, userID identity.UserID, family string, meta SessionMetadata) (*TokenResponse, error) {
-	access, expires, err := s.tokenSvc.GenerateAccessToken(userID)
+func (s *AuthApplicationService) issue(ctx context.Context, user *identity.User, family string, meta SessionMetadata) (*TokenResponse, error) {
+	access, expires, err := s.tokenSvc.GenerateAccessToken(user.ID(), user.SecurityVersion())
 	if err != nil {
 		return nil, err
 	}
-	session, refresh, err := newRefreshCredential(userID, family, s.refreshTTL, meta)
+	session, refresh, err := newRefreshCredential(user.ID(), family, s.refreshTTL, meta)
 	if err != nil {
 		return nil, err
 	}
@@ -67,7 +66,7 @@ func (s *AuthApplicationService) Register(ctx context.Context, req RegisterReque
 	// The access token must carry the database-assigned user ID. Generate it
 	// only after the transaction commits; refresh-session creation is already
 	// durable and can be revoked if token generation unexpectedly fails.
-	access, expires, err := s.tokenSvc.GenerateAccessToken(user.ID())
+	access, expires, err := s.tokenSvc.GenerateAccessToken(user.ID(), user.SecurityVersion())
 	if err != nil {
 		_ = s.sessions.RevokeAll(ctx, user.ID())
 		return nil, err
@@ -84,7 +83,7 @@ func (s *AuthApplicationService) Login(ctx context.Context, req LoginRequest, me
 	if !user.IsActive() {
 		return nil, shared.NewDomainError(shared.ErrForbidden, "account is suspended")
 	}
-	return s.issue(ctx, user.ID(), "", meta)
+	return s.issue(ctx, user, "", meta)
 }
 
 func (s *AuthApplicationService) Refresh(ctx context.Context, token string, meta SessionMetadata) (*TokenResponse, error) {
@@ -95,16 +94,16 @@ func (s *AuthApplicationService) Refresh(ctx context.Context, token string, meta
 	if err != nil {
 		return nil, err
 	}
-	userID, err := s.sessions.Rotate(ctx, hashRefreshToken(token), next)
+	userID, securityVersion, err := s.sessions.Rotate(ctx, hashRefreshToken(token), next)
 	if err != nil {
 		return nil, err
 	}
 	user, err := s.userRepo.FindByID(ctx, userID)
-	if err != nil || !user.IsActive() {
+	if err != nil || user == nil || !user.IsActive() || user.SecurityVersion() != securityVersion {
 		_ = s.sessions.RevokeAll(ctx, userID)
-		return nil, shared.NewDomainError(shared.ErrUnauthorized, "account is unavailable")
+		return nil, shared.NewDomainError(shared.ErrUnauthorized, "account credentials changed; sign in again")
 	}
-	access, expires, err := s.tokenSvc.GenerateAccessToken(userID)
+	access, expires, err := s.tokenSvc.GenerateAccessToken(userID, securityVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +116,10 @@ func (s *AuthApplicationService) Logout(ctx context.Context, token string) error
 	return s.sessions.Revoke(ctx, hashRefreshToken(token))
 }
 func (s *AuthApplicationService) LogoutAll(ctx context.Context, userID identity.UserID) error {
-	return s.sessions.RevokeAll(ctx, userID)
+	if s.accounts == nil {
+		return shared.NewDomainError(shared.ErrConflict, "transactional session revocation is unavailable")
+	}
+	return s.accounts.RevokeAllAccess(ctx, userID)
 }
 
 func (s *AuthApplicationService) Sessions(ctx context.Context, userID identity.UserID, currentToken string) ([]SessionDTO, error) {

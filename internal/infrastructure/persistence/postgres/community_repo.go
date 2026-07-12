@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -387,6 +388,12 @@ func (r *CommunityRepo) SaveComment(ctx context.Context, c *communityDomain.Comm
 		err = tx.QueryRow(ctx, `SELECT author_id FROM published_canvases WHERE canvas_id=$1 AND moderation_status='visible'`, c.CanvasID()).Scan(&recipient)
 	}
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			if c.ParentID() != nil {
+				return shared.NewDomainError(shared.ErrConflict, "parent comment no longer exists")
+			}
+			return shared.NewDomainError(shared.ErrConflict, "canvas is no longer available for comments")
+		}
 		return mapPgError(err)
 	}
 	if blocked, err := interactionBlocked(ctx, tx, c.AuthorID(), recipient); err != nil {

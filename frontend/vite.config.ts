@@ -109,7 +109,18 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:8080',
+      '/api': {
+        target: 'http://localhost:8080',
+        changeOrigin: false,
+        configure(proxy) {
+          // Cookie-authenticated refresh/logout endpoints enforce same-origin
+          // requests. Preserve the browser-facing Host through the dev proxy
+          // instead of exposing the upstream localhost:8080 host to the API.
+          proxy.on('proxyReq', (proxyReq, req) => {
+            if (req.headers.host) proxyReq.setHeader('host', req.headers.host)
+          })
+        },
+      },
       '/ws': {
         target: 'ws://localhost:8081',
         ws: true,

@@ -7,7 +7,7 @@ import { canvasService } from '../services/canvas';
 import { getAccessToken } from '../services/api';
 import { useYjsProvider } from '../hooks/useYjsProvider';
 import { useTldrawSync } from '../hooks/useTldrawSync';
-import { useAuth } from '../store/AuthContext';
+import { useAuth } from '../store/authStore';
 import { Layout } from '../components/layout/Layout';
 import { OnlineUsers } from '../components/canvas/OnlineUsers';
 import { MemberManager } from '../components/canvas/MemberManager';

@@ -31,21 +31,29 @@ func NewJWTServiceWithClaims(accessSecret string, accessTTL time.Duration, issue
 	return &JWTService{accessSecret: []byte(accessSecret), accessTTL: accessTTL, issuer: issuer, audience: audience}
 }
 
-func (s *JWTService) GenerateAccessToken(userID identity.UserID) (string, int64, error) {
+type accessClaims struct {
+	SecurityVersion int64 `json:"sv"`
+	jwt.RegisteredClaims
+}
+
+func (s *JWTService) GenerateAccessToken(userID identity.UserID, securityVersion int64) (string, int64, error) {
+	if userID <= 0 || securityVersion <= 0 {
+		return "", 0, shared.NewDomainError(shared.ErrInvalidArgument, "invalid access token identity")
+	}
 	now := time.Now().UTC()
 	expiresAt := now.Add(s.accessTTL)
-	claims := jwt.RegisteredClaims{
+	claims := accessClaims{SecurityVersion: securityVersion, RegisteredClaims: jwt.RegisteredClaims{
 		Issuer: s.issuer, Subject: strconv.FormatInt(int64(userID), 10), Audience: jwt.ClaimStrings{s.audience},
 		ExpiresAt: jwt.NewNumericDate(expiresAt), NotBefore: jwt.NewNumericDate(now), IssuedAt: jwt.NewNumericDate(now), ID: randomHex(16),
-	}
+	}}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	token.Header["typ"] = "at+jwt"
 	value, err := token.SignedString(s.accessSecret)
 	return value, expiresAt.Unix(), err
 }
 
-func (s *JWTService) ValidateAccessToken(value string) (identity.UserID, error) {
-	claims := &jwt.RegisteredClaims{}
+func (s *JWTService) ValidateAccessToken(value string) (identity.AccessIdentity, error) {
+	claims := &accessClaims{}
 	token, err := jwt.ParseWithClaims(value, claims, func(t *jwt.Token) (interface{}, error) {
 		if t.Method != jwt.SigningMethodHS256 {
 			return nil, shared.NewDomainError(shared.ErrUnauthorized, "unexpected signing method")
@@ -53,16 +61,19 @@ func (s *JWTService) ValidateAccessToken(value string) (identity.UserID, error) 
 		return s.accessSecret, nil
 	}, jwt.WithIssuer(s.issuer), jwt.WithAudience(s.audience), jwt.WithExpirationRequired(), jwt.WithIssuedAt())
 	if err != nil || !token.Valid {
-		return 0, shared.NewDomainError(shared.ErrUnauthorized, "invalid or expired token")
+		return identity.AccessIdentity{}, shared.NewDomainError(shared.ErrUnauthorized, "invalid or expired token")
 	}
 	if typ, _ := token.Header["typ"].(string); typ != "at+jwt" {
-		return 0, shared.NewDomainError(shared.ErrUnauthorized, "invalid token type")
+		return identity.AccessIdentity{}, shared.NewDomainError(shared.ErrUnauthorized, "invalid token type")
 	}
 	id, err := strconv.ParseInt(claims.Subject, 10, 64)
 	if err != nil || id <= 0 {
-		return 0, shared.NewDomainError(shared.ErrUnauthorized, "invalid token subject")
+		return identity.AccessIdentity{}, shared.NewDomainError(shared.ErrUnauthorized, "invalid token subject")
 	}
-	return identity.UserID(id), nil
+	if claims.SecurityVersion <= 0 {
+		return identity.AccessIdentity{}, shared.NewDomainError(shared.ErrUnauthorized, "invalid token security version")
+	}
+	return identity.AccessIdentity{UserID: identity.UserID(id), SecurityVersion: claims.SecurityVersion}, nil
 }
 
 func randomHex(n int) string {

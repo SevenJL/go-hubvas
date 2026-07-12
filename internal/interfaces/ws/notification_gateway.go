@@ -64,18 +64,23 @@ func (g *NotificationGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, `{"code":"missing_token","message":"token is required"}`, http.StatusUnauthorized)
 		return
 	}
-	userID, err := g.tokenSvc.ValidateAccessToken(token)
+	access, err := g.tokenSvc.ValidateAccessToken(token)
 	if err != nil {
 		http.Error(w, `{"code":"invalid_token","message":"invalid or expired token"}`, http.StatusUnauthorized)
 		return
 	}
+	userID := access.UserID
 	user, err := g.users.FindByID(r.Context(), userID)
-	if err != nil {
+	if err != nil || user == nil {
 		http.Error(w, `{"code":"invalid_user","message":"user not found"}`, http.StatusUnauthorized)
 		return
 	}
 	if !user.IsActive() {
 		http.Error(w, `{"code":"suspended","message":"account is suspended"}`, http.StatusForbidden)
+		return
+	}
+	if access.SecurityVersion != user.SecurityVersion() {
+		http.Error(w, `{"code":"revoked_token","message":"access token has been revoked"}`, http.StatusUnauthorized)
 		return
 	}
 	options := &websocket.AcceptOptions{InsecureSkipVerify: false}

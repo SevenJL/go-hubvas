@@ -34,11 +34,16 @@ type authSessionRepoStub struct {
 	items          []SessionDTO
 	revokedUser    identity.UserID
 	revokedSession string
+	rotateVersion  int64
 }
 
 func (*authSessionRepoStub) Create(context.Context, RefreshSession) error { return nil }
-func (*authSessionRepoStub) Rotate(context.Context, []byte, RefreshSession) (identity.UserID, error) {
-	return 0, nil
+func (r *authSessionRepoStub) Rotate(context.Context, []byte, RefreshSession) (identity.UserID, int64, error) {
+	version := r.rotateVersion
+	if version <= 0 {
+		version = 1
+	}
+	return 7, version, nil
 }
 func (*authSessionRepoStub) Revoke(context.Context, []byte) error { return nil }
 func (r *authSessionRepoStub) RevokeAll(_ context.Context, id identity.UserID) error {
@@ -58,9 +63,10 @@ func (r *authSessionRepoStub) RevokeByID(_ context.Context, _ identity.UserID, i
 }
 
 type accountUOWStub struct {
-	registerErr     error
-	registered      bool
-	passwordChanged bool
+	registerErr      error
+	registered       bool
+	passwordChanged  bool
+	allAccessRevoked bool
 }
 
 func (a *accountUOWStub) Register(_ context.Context, user *identity.User, _ RefreshSession) error {
@@ -75,6 +81,10 @@ func (a *accountUOWStub) ChangePasswordAndRevokeSessions(context.Context, *ident
 	a.passwordChanged = true
 	return nil
 }
+func (a *accountUOWStub) RevokeAllAccess(context.Context, identity.UserID) error {
+	a.allAccessRevoked = true
+	return nil
+}
 
 type passwordStub struct{}
 
@@ -83,13 +93,12 @@ func (passwordStub) Verify(value, hash string) bool    { return hash == "hash:"+
 
 type tokenStub struct{}
 
-func (tokenStub) GenerateAccessToken(id identity.UserID) (string, int64, error) {
+func (tokenStub) GenerateAccessToken(id identity.UserID, _ int64) (string, int64, error) {
 	return "token", int64(id), nil
 }
-func (tokenStub) ValidateAccessToken(string) (identity.UserID, error) { return 1, nil }
 
 func testUser() *identity.User {
-	return identity.ReconstituteUserProfile(7, "tester", "test@example.com", "hash:old-password", "Tester", "", "", "", "", 0, "user", "active", time.Now(), time.Now())
+	return identity.ReconstituteUserProfile(7, "tester", "test@example.com", "hash:old-password", "Tester", "", "", "", "", 0, 1, "user", "active", time.Now(), time.Now())
 }
 
 func TestRegisterUsesAtomicAccountUnit(t *testing.T) {
@@ -146,6 +155,9 @@ func TestChangePasswordUsesAtomicUpdateAndSessionRevocation(t *testing.T) {
 	if user.PasswordHash() != "hash:new-password" {
 		t.Fatalf("unexpected password hash %q", user.PasswordHash())
 	}
+	if user.SecurityVersion() != 2 {
+		t.Fatalf("expected password change to rotate security version, got %d", user.SecurityVersion())
+	}
 }
 
 func TestSessionsMarksCurrentCredentialAndRevokesByID(t *testing.T) {
@@ -160,5 +172,30 @@ func TestSessionsMarksCurrentCredentialAndRevokesByID(t *testing.T) {
 	}
 	if sessions.revokedSession != "session-a" {
 		t.Fatal("session ID was not delegated")
+	}
+}
+
+func TestLogoutAllRevokesRefreshAndAccessCredentials(t *testing.T) {
+	accounts := &accountUOWStub{}
+	service := NewAuthApplicationService(&authUserRepoStub{}, &authSessionRepoStub{}, accounts, tokenStub{}, passwordStub{}, time.Hour)
+	if err := service.LogoutAll(context.Background(), 7); err != nil {
+		t.Fatal(err)
+	}
+	if !accounts.allAccessRevoked {
+		t.Fatal("expected transactional access revocation")
+	}
+}
+
+func TestRefreshRejectsCredentialVersionChangedDuringRotation(t *testing.T) {
+	now := time.Now()
+	users := &authUserRepoStub{user: identity.ReconstituteUserProfile(7, "tester", "test@example.com", "hash", "Tester", "", "", "", "", 0, 2, "user", "active", now, now)}
+	sessions := &authSessionRepoStub{rotateVersion: 1}
+	service := NewAuthApplicationService(users, sessions, &accountUOWStub{}, tokenStub{}, passwordStub{}, time.Hour)
+
+	if _, err := service.Refresh(context.Background(), "refresh-token", SessionMetadata{}); err == nil {
+		t.Fatal("expected refresh to fail after account security version changed")
+	}
+	if sessions.revokedUser != 7 {
+		t.Fatalf("expected replacement session to be revoked, got user %d", sessions.revokedUser)
 	}
 }

@@ -14,13 +14,13 @@ type UserID int64
 
 type User struct {
 	shared.AggregateRoot
-	id                            UserID
-	username, email, passwordHash string
-	displayName, bio, website     string
-	avatarURL, avatarKey          string
-	avatarVersion                 int64
-	accountRole, status           string
-	createdAt, updatedAt          time.Time
+	id                             UserID
+	username, email, passwordHash  string
+	displayName, bio, website      string
+	avatarURL, avatarKey           string
+	avatarVersion, securityVersion int64
+	accountRole, status            string
+	createdAt, updatedAt           time.Time
 }
 
 func NewUser(id UserID, username, email, passwordHash string) (*User, error) {
@@ -42,40 +42,42 @@ func NewUser(id UserID, username, email, passwordHash string) (*User, error) {
 
 // ReconstituteUser is retained for test and adapter compatibility.
 func ReconstituteUser(id UserID, username, email, passwordHash, avatarURL string, createdAt time.Time) *User {
-	return ReconstituteUserProfile(id, username, email, passwordHash, username, "", "", avatarURL, "", 0, "user", "active", createdAt, createdAt)
+	return ReconstituteUserProfile(id, username, email, passwordHash, username, "", "", avatarURL, "", 0, 1, "user", "active", createdAt, createdAt)
 }
-func ReconstituteUserProfile(id UserID, username, email, passwordHash, displayName, bio, website, avatarURL, avatarKey string, avatarVersion int64, role, status string, createdAt, updatedAt time.Time) *User {
+func ReconstituteUserProfile(id UserID, username, email, passwordHash, displayName, bio, website, avatarURL, avatarKey string, avatarVersion, securityVersion int64, role, status string, createdAt, updatedAt time.Time) *User {
 	if displayName == "" {
 		displayName = username
 	}
-	return &User{id: id, username: username, email: email, passwordHash: passwordHash, displayName: displayName, bio: bio, website: website, avatarURL: avatarURL, avatarKey: avatarKey, avatarVersion: avatarVersion, accountRole: role, status: status, createdAt: createdAt, updatedAt: updatedAt}
+	return &User{id: id, username: username, email: email, passwordHash: passwordHash, displayName: displayName, bio: bio, website: website, avatarURL: avatarURL, avatarKey: avatarKey, avatarVersion: avatarVersion, securityVersion: max(securityVersion, 1), accountRole: role, status: status, createdAt: createdAt, updatedAt: updatedAt}
 }
 func (u *User) SetID(id UserID) {
 	if u.id == 0 {
 		u.id = id
 	}
 }
-func (u *User) ID() UserID           { return u.id }
-func (u *User) Username() string     { return u.username }
-func (u *User) Email() string        { return u.email }
-func (u *User) PasswordHash() string { return u.passwordHash }
-func (u *User) DisplayName() string  { return u.displayName }
-func (u *User) Bio() string          { return u.bio }
-func (u *User) Website() string      { return u.website }
-func (u *User) AvatarURL() string    { return u.avatarURL }
-func (u *User) AvatarKey() string    { return u.avatarKey }
-func (u *User) AvatarVersion() int64 { return u.avatarVersion }
-func (u *User) AccountRole() string  { return u.accountRole }
-func (u *User) Status() string       { return u.status }
-func (u *User) IsAdmin() bool        { return u.accountRole == "admin" }
-func (u *User) IsActive() bool       { return u.status == "active" }
-func (u *User) CreatedAt() time.Time { return u.createdAt }
-func (u *User) UpdatedAt() time.Time { return u.updatedAt }
+func (u *User) ID() UserID             { return u.id }
+func (u *User) Username() string       { return u.username }
+func (u *User) Email() string          { return u.email }
+func (u *User) PasswordHash() string   { return u.passwordHash }
+func (u *User) DisplayName() string    { return u.displayName }
+func (u *User) Bio() string            { return u.bio }
+func (u *User) Website() string        { return u.website }
+func (u *User) AvatarURL() string      { return u.avatarURL }
+func (u *User) AvatarKey() string      { return u.avatarKey }
+func (u *User) AvatarVersion() int64   { return u.avatarVersion }
+func (u *User) SecurityVersion() int64 { return max(u.securityVersion, 1) }
+func (u *User) AccountRole() string    { return u.accountRole }
+func (u *User) Status() string         { return u.status }
+func (u *User) IsAdmin() bool          { return u.accountRole == "admin" }
+func (u *User) IsActive() bool         { return u.status == "active" }
+func (u *User) CreatedAt() time.Time   { return u.createdAt }
+func (u *User) UpdatedAt() time.Time   { return u.updatedAt }
 func (u *User) ChangePassword(v string) error {
 	if v == "" {
 		return shared.NewDomainError(shared.ErrInvalidArgument, "password hash must not be empty")
 	}
 	u.passwordHash = v
+	u.securityVersion = u.SecurityVersion() + 1
 	u.updatedAt = time.Now()
 	return nil
 }

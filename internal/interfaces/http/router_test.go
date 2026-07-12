@@ -13,8 +13,8 @@ import (
 
 type tokenValidatorStub struct{}
 
-func (tokenValidatorStub) ValidateAccessToken(string) (identity.UserID, error) {
-	return 0, errors.New("invalid token")
+func (tokenValidatorStub) ValidateAccessToken(string) (identity.AccessIdentity, error) {
+	return identity.AccessIdentity{}, errors.New("invalid token")
 }
 
 func TestNewRouterDoesNotRegisterWebSocketWhenGatewayIsNil(t *testing.T) {

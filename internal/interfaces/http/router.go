@@ -24,6 +24,7 @@ type RouterConfig struct {
 	UserLookup       middleware.AccountLookup
 	TrustedProxies   []string
 	DBPool           *pgxpool.Pool
+	MetricsToken     string
 }
 
 // NewRouter creates and configures the Gin router with all routes.
@@ -42,6 +43,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	idempotency := middleware.Idempotency(cfg.DBPool)
 
 	// Global middleware.
+	r.Use(middleware.SecurityHeaders())
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Metrics())
 	r.Use(middleware.AccessLog(nil))
@@ -51,7 +53,7 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	// ---- Health check (no auth) ----
 	r.GET("/health", cfg.HealthHandler.Health)
 	r.GET("/ready", cfg.HealthHandler.Ready)
-	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+	r.GET("/metrics", middleware.MetricsAuth(cfg.MetricsToken), gin.WrapH(promhttp.Handler()))
 
 	// ---- Public routes (no auth required) ----
 
@@ -64,22 +66,22 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 	}
 
 	// Public user profiles and community read access.
-	r.GET("/api/users/:identifier", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.SocialHandler.Profile)
-	r.GET("/api/users/:identifier/canvases", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.SocialHandler.UserCanvases)
+	r.GET("/api/users/:identifier", middleware.OptionalAuthMiddleware(cfg.TokenSvc, cfg.UserLookup), cfg.SocialHandler.Profile)
+	r.GET("/api/users/:identifier/canvases", middleware.OptionalAuthMiddleware(cfg.TokenSvc, cfg.UserLookup), cfg.SocialHandler.UserCanvases)
 
 	// Community — public read access.
-	r.GET("/api/community", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.Browse)
-	r.GET("/api/community/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.GetPublished)
+	r.GET("/api/community", middleware.OptionalAuthMiddleware(cfg.TokenSvc, cfg.UserLookup), cfg.CommunityHandler.Browse)
+	r.GET("/api/community/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc, cfg.UserLookup), cfg.CommunityHandler.GetPublished)
 
 	// Static canvas routes must be registered before the public /:id wildcard.
 	// Otherwise Gin routes /api/canvases/shared to CanvasHandler.Get with id="shared".
-	r.GET("/api/canvases/shared", middleware.AuthMiddleware(cfg.TokenSvc), cfg.CanvasHandler.ListShared)
+	r.GET("/api/canvases/shared", middleware.AuthMiddleware(cfg.TokenSvc), middleware.ActiveAccountMiddleware(cfg.UserLookup), cfg.CanvasHandler.ListShared)
 
 	// Canvas detail — public (for published canvases).
-	r.GET("/api/canvases/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CanvasHandler.Get)
-	r.GET("/api/canvases/:id/comments", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.GetComments)
-	r.GET("/api/canvases/:id/like-status", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.LikeStatus)
-	r.GET("/api/canvases/:id/snapshot", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.SnapshotHandler.Load)
+	r.GET("/api/canvases/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc, cfg.UserLookup), cfg.CanvasHandler.Get)
+	r.GET("/api/canvases/:id/comments", middleware.OptionalAuthMiddleware(cfg.TokenSvc, cfg.UserLookup), cfg.CommunityHandler.GetComments)
+	r.GET("/api/canvases/:id/like-status", middleware.OptionalAuthMiddleware(cfg.TokenSvc, cfg.UserLookup), cfg.CommunityHandler.LikeStatus)
+	r.GET("/api/canvases/:id/snapshot", middleware.OptionalAuthMiddleware(cfg.TokenSvc, cfg.UserLookup), cfg.SnapshotHandler.Load)
 
 	// ---- Protected routes (JWT required) ----
 

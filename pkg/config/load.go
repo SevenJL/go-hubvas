@@ -129,6 +129,9 @@ func (c Config) Validate() error {
 		if !c.Auth.CookieSecure {
 			missing = append(missing, "AUTH_COOKIE_SECURE=true")
 		}
+		if len(c.Server.MetricsToken) < 32 {
+			missing = append(missing, "METRICS_TOKEN (minimum 32 characters)")
+		}
 		if len(missing) > 0 {
 			return fmt.Errorf("unsafe production configuration: %s", strings.Join(missing, ", "))
 		}
@@ -138,7 +141,7 @@ func (c Config) Validate() error {
 
 func applyEnvironment(cfg *Config) error {
 	stringsMap := map[string]*string{
-		"APP_ENV": &cfg.Environment, "API_HOST": &cfg.Server.APIHost, "WS_HOST": &cfg.Server.WSHost,
+		"APP_ENV": &cfg.Environment, "API_HOST": &cfg.Server.APIHost, "WS_HOST": &cfg.Server.WSHost, "METRICS_TOKEN": &cfg.Server.MetricsToken,
 		"DB_HOST": &cfg.Database.Host, "DB_USER": &cfg.Database.User, "DB_PASSWORD": &cfg.Database.Password, "DB_NAME": &cfg.Database.DBName, "DB_SSLMODE": &cfg.Database.SSLMode,
 		"REDIS_ADDR": &cfg.Redis.Addr, "REDIS_PASSWORD": &cfg.Redis.Password, "NATS_URL": &cfg.NATS.URL, "NATS_TOKEN": &cfg.NATS.Token,
 		"STORAGE_ENDPOINT": &cfg.Storage.Endpoint, "STORAGE_ACCESS_KEY": &cfg.Storage.AccessKey, "STORAGE_SECRET_KEY": &cfg.Storage.SecretKey, "STORAGE_BUCKET": &cfg.Storage.Bucket, "STORAGE_MEDIA_BUCKET": &cfg.Storage.MediaBucket, "STORAGE_PUBLIC_BASE_URL": &cfg.Storage.PublicBaseURL,
