@@ -1,30 +1,39 @@
 package community
 
-import "time"
+import (
+	"time"
+)
 
 // PublishedCanvasDTO is the public representation of a published canvas.
 type PublishedCanvasDTO struct {
-	CanvasID     int64    `json:"canvas_id,string"`
-	AuthorID     int64    `json:"author_id,string"`
-	AuthorName   string   `json:"author_name"`
-	Title        string   `json:"title"`
-	SnapshotURL  string   `json:"snapshot_url"`
-	Tags         []string `json:"tags"`
-	LikeCount    int64    `json:"like_count"`
-	IsLiked      bool     `json:"is_liked"`
-	CommentCount int64    `json:"comment_count"`
-	ForkCount    int64    `json:"fork_count"`
-	PublishedAt  int64    `json:"published_at"`
+	CanvasID        int64    `json:"canvas_id,string"`
+	AuthorID        int64    `json:"author_id,string"`
+	AuthorName      string   `json:"author_name"`
+	AuthorUsername  string   `json:"author_username"`
+	AuthorAvatarURL string   `json:"author_avatar_url,omitempty"`
+	Title           string   `json:"title"`
+	SnapshotURL     string   `json:"snapshot_url"`
+	Tags            []string `json:"tags"`
+	LikeCount       int64    `json:"like_count"`
+	IsLiked         bool     `json:"is_liked"`
+	CommentCount    int64    `json:"comment_count"`
+	ForkCount       int64    `json:"fork_count"`
+	PublishedAt     int64    `json:"published_at"`
 }
 
 // CommentDTO is the public representation of a comment.
 type CommentDTO struct {
-	ID         int64  `json:"id,string"`
-	CanvasID   int64  `json:"canvas_id,string"`
-	AuthorID   int64  `json:"author_id,string"`
-	AuthorName string `json:"author_name"`
-	Content    string `json:"content"`
-	CreatedAt  int64  `json:"created_at"`
+	ID               int64  `json:"id,string"`
+	CanvasID         int64  `json:"canvas_id,string"`
+	AuthorID         int64  `json:"author_id,string"`
+	AuthorName       string `json:"author_name"`
+	AuthorUsername   string `json:"author_username"`
+	AuthorAvatarURL  string `json:"author_avatar_url,omitempty"`
+	ParentCommentID  *int64 `json:"parent_comment_id,omitempty,string"`
+	Content          string `json:"content"`
+	Deleted          bool   `json:"deleted"`
+	ModerationStatus string `json:"moderation_status"`
+	CreatedAt        int64  `json:"created_at"`
 }
 
 // FeedResponse is the paginated response for the community feed.
@@ -37,7 +46,8 @@ type FeedResponse struct {
 
 // NewCommentRequest is the input DTO for posting a comment.
 type NewCommentRequest struct {
-	Content string `json:"content" binding:"required,min=1,max=5000"`
+	Content         string `json:"content" binding:"required,min=1,max=5000"`
+	ParentCommentID *int64 `json:"parent_comment_id,omitempty,string"`
 }
 
 // SearchRequest is the input DTO for searching the community.

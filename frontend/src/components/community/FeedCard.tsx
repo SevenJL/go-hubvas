@@ -1,49 +1,9 @@
 import { useNavigate } from 'react-router-dom';
-import { Heart, MessageCircle, GitFork } from 'lucide-react';
+import { GitFork, Heart, MessageCircle } from 'lucide-react';
+import { Avatar } from '../ui/Avatar';
 import { CanvasThumbnail } from '../canvas/CanvasThumbnail';
-import { Card } from '../ui/Card';
 import type { PublishedCanvas } from '../../types';
-import { useI18n } from '../../i18n';
-
-interface FeedCardProps {
-  item: PublishedCanvas;
-}
-
-export function FeedCard({ item }: FeedCardProps) {
-  const navigate = useNavigate();
-  const { t } = useI18n();
-
-  return (
-    <Card hover className="overflow-hidden" onClick={() => navigate(`/canvas/${item.canvas_id}`)}>
-      <CanvasThumbnail canvasId={item.canvas_id} />
-      <div className="p-4">
-        <h3 className="font-semibold text-gray-900 truncate">{item.title}</h3>
-        <p className="text-xs text-gray-500 mt-0.5">
-          {t('by {author}', { author: item.author_name || t('User #{id}', { id: item.author_id }) })}
-        </p>
-
-        {item.tags && item.tags.length > 0 && (
-          <div className="flex flex-wrap gap-1 mt-2">
-            {item.tags.map(tag => (
-              <span key={tag} className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded-full">
-                {tag}
-              </span>
-            ))}
-          </div>
-        )}
-
-        <div className="flex items-center gap-4 mt-3 text-sm text-gray-500">
-          <span className="flex items-center gap-1">
-            <Heart size={14} className="text-red-400" /> {item.like_count}
-          </span>
-          <span className="flex items-center gap-1">
-            <MessageCircle size={14} /> {item.comment_count}
-          </span>
-          <span className="flex items-center gap-1">
-            <GitFork size={14} /> {item.fork_count}
-          </span>
-        </div>
-      </div>
-    </Card>
-  );
-}
+export function FeedCard({item}:{item:PublishedCanvas}){const navigate=useNavigate();return <article className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg">
+ <button className="block w-full text-left" onClick={()=>navigate(`/canvas/${item.canvas_id}`)}><CanvasThumbnail canvasId={item.canvas_id}/></button>
+ <div className="p-5"><button onClick={()=>item.author_username&&navigate(`/users/${item.author_username}`)} className="flex items-center gap-3 text-left"><Avatar name={item.author_name||item.author_username} src={item.author_avatar_url}/><span><strong className="block text-sm text-slate-900">{item.author_name||item.author_username}</strong><span className="text-xs text-slate-400">@{item.author_username}</span></span></button>
+ <button onClick={()=>navigate(`/canvas/${item.canvas_id}`)} className="mt-4 block w-full text-left"><h3 className="truncate text-lg font-semibold text-slate-950 group-hover:text-indigo-600">{item.title}</h3>{item.tags?.length>0&&<div className="mt-3 flex flex-wrap gap-1.5">{item.tags.map(tag=><span key={tag} className="rounded-full bg-slate-100 px-2 py-1 text-[11px] text-slate-600">#{tag}</span>)}</div>}<div className="mt-4 flex gap-5 text-sm text-slate-500"><span className="flex items-center gap-1.5"><Heart size={15}/>{item.like_count}</span><span className="flex items-center gap-1.5"><MessageCircle size={15}/>{item.comment_count}</span><span className="flex items-center gap-1.5"><GitFork size={15}/>{item.fork_count}</span></div></button></div></article>}

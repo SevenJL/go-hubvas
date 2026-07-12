@@ -112,6 +112,10 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"code":"invalid_user","message":"authenticated user no longer exists"}`, http.StatusUnauthorized)
 		return
 	}
+	if !user.IsActive() {
+		http.Error(w, `{"code":"suspended","message":"account is suspended"}`, http.StatusForbidden)
+		return
+	}
 	if g.throttleSvc != nil {
 		allowed, throttleErr := g.throttleSvc.AllowConnection(r.Context(), userID, collaboration.RoomID(canvasID))
 		if throttleErr != nil {

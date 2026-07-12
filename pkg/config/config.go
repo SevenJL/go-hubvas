@@ -53,11 +53,15 @@ type NATSConfig struct {
 
 // StorageConfig holds object storage (MinIO/S3) settings.
 type StorageConfig struct {
-	Endpoint  string `yaml:"endpoint" env:"STORAGE_ENDPOINT" default:"localhost:9000"`
-	AccessKey string `yaml:"access_key" env:"STORAGE_ACCESS_KEY"`
-	SecretKey string `yaml:"secret_key" env:"STORAGE_SECRET_KEY"`
-	Bucket    string `yaml:"bucket" default:"hubvas-snapshots"`
-	UseSSL    bool   `yaml:"use_ssl" default:"false"`
+	Endpoint       string        `yaml:"endpoint" env:"STORAGE_ENDPOINT" default:"localhost:9000"`
+	AccessKey      string        `yaml:"access_key" env:"STORAGE_ACCESS_KEY"`
+	SecretKey      string        `yaml:"secret_key" env:"STORAGE_SECRET_KEY"`
+	Bucket         string        `yaml:"bucket" default:"hubvas-snapshots"`
+	MediaBucket    string        `yaml:"media_bucket" default:"hubvas-media"`
+	PublicBaseURL  string        `yaml:"public_base_url"`
+	PresignTTL     time.Duration `yaml:"presign_ttl" default:"15m"`
+	AvatarMaxBytes int64         `yaml:"avatar_max_bytes" default:"5242880"`
+	UseSSL         bool          `yaml:"use_ssl" default:"false"`
 }
 
 // AuthConfig holds authentication settings.

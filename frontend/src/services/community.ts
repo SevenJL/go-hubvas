@@ -45,10 +45,15 @@ export const communityService = {
     return res.data;
   },
 
-  async postComment(canvasId: string, content: string): Promise<CommentInfo> {
-    const res = await api.post<CommentInfo>(`/canvases/${canvasId}/comments`, { content });
+  async postComment(canvasId: string, content: string, parentCommentId?: string): Promise<CommentInfo> {
+    const res = await api.post<CommentInfo>(`/canvases/${canvasId}/comments`, { content, parent_comment_id: parentCommentId });
     if (res.code !== 0 || !res.data) throw new Error(res.message || 'Failed to post comment');
     return res.data;
+  },
+
+  async deleteComment(commentId: string): Promise<void> {
+    const res = await api.delete(`/comments/${commentId}`);
+    if (res.code !== 0) throw new Error(res.message || 'Failed to delete comment');
   },
 
   async getComments(canvasId: string, page = 1, pageSize = 20): Promise<CommentListResponse> {

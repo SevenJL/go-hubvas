@@ -85,10 +85,10 @@ export function MemberManager({ canvasId, onClose }: { canvasId: string; onClose
           <div className="max-h-80 divide-y divide-slate-100 overflow-y-auto">
             {members.map(member => (
               <div key={member.user_id} className="flex items-center gap-3 py-3">
-                <Avatar name={member.username || t('User {id}', { id: member.user_id })} />
+                <Avatar name={member.display_name || member.username || t('User {id}', { id: member.user_id })} src={member.avatar_url} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-slate-900">{member.username || t('User {id}', { id: member.user_id })}</div>
-                  <div className="text-[11px] text-slate-400">{t('ID {id}', { id: member.user_id })}</div>
+                  <div className="truncate text-sm font-medium text-slate-900">{member.display_name || member.username || t('User {id}', { id: member.user_id })}</div>
+                  <div className="text-[11px] text-slate-400">@{member.username} · {t('ID {id}', { id: member.user_id })}</div>
                 </div>
                 {member.role === 'owner' ? (
                   <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">{t('owner')}</span>

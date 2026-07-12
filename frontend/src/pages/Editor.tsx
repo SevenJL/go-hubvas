@@ -315,7 +315,7 @@ export function Editor() {
             )}
           </div>
 
-          <OnlineUsers users={onlineUsers} connected={connected} currentUsername={user?.username || t('You')} />
+          <OnlineUsers users={onlineUsers} connected={connected} currentUsername={user?.display_name || user?.username || t('You')} currentAvatarURL={user?.avatar_url} />
         </div>
 
         {showMembers && <MemberManager canvasId={canvasId} onClose={() => setShowMembers(false)} />}

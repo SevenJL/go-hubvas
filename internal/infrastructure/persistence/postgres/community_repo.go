@@ -47,7 +47,7 @@ const (
 	communitySelectPublishedSQL = `
 		SELECT canvas_id, author_id, title, snapshot_url, like_count, comment_count, fork_count, published_at
 		FROM published_canvases
-		WHERE canvas_id = $1`
+		WHERE canvas_id = $1 AND moderation_status = 'visible'`
 
 	communityRemovePublishedSQL = `DELETE FROM published_canvases WHERE canvas_id = $1`
 )
@@ -136,9 +136,18 @@ func (r *CommunityRepo) RemovePublished(ctx context.Context, id canvasDomain.Can
 // ---- searchPublished ----
 
 func (r *CommunityRepo) searchPublished(ctx context.Context, query communityDomain.SearchQuery, tagsOnly bool) ([]*communityDomain.PublishedCanvas, int64, error) {
-	whereClauses := []string{}
+	whereClauses := []string{"pc.moderation_status = 'visible'", "EXISTS (SELECT 1 FROM users u WHERE u.id = pc.author_id AND u.status = 'active')"}
 	args := []any{}
 	argIdx := 1
+	if query.ViewerID != 0 {
+		whereClauses = append(whereClauses, fmt.Sprintf(`NOT EXISTS (
+			SELECT 1 FROM blocks b
+			WHERE (b.blocker_id=$%d AND b.blocked_id=pc.author_id)
+			   OR (b.blocker_id=pc.author_id AND b.blocked_id=$%d)
+		)`, argIdx, argIdx))
+		args = append(args, query.ViewerID)
+		argIdx++
+	}
 
 	// Keyword filter (title ILIKE)
 	if query.Keyword != "" && !tagsOnly {
@@ -277,13 +286,25 @@ func (r *CommunityRepo) LikeCanvas(ctx context.Context, like *communityDomain.Li
 		return 0, err
 	}
 	defer tx.Rollback(ctx)
-
+	var recipient identity.UserID
+	err = tx.QueryRow(ctx, `SELECT author_id FROM published_canvases WHERE canvas_id=$1 AND moderation_status='visible'`, like.CanvasID).Scan(&recipient)
+	if err != nil {
+		return 0, mapPgError(err)
+	}
+	if blocked, err := interactionBlocked(ctx, tx, like.UserID, recipient); err != nil {
+		return 0, err
+	} else if blocked {
+		return 0, shared.NewDomainError(shared.ErrForbidden, "interaction blocked")
+	}
 	if _, err := tx.Exec(ctx, communityInsertLikeSQL, like.CanvasID, like.UserID, like.CreatedAt); err != nil {
 		return 0, mapPgError(err)
 	}
 	var count int64
 	if err := tx.QueryRow(ctx, communityIncrementLikeSQL, like.CanvasID).Scan(&count); err != nil {
 		return 0, mapPgError(err)
+	}
+	if err := createNotificationTx(ctx, tx, recipient, like.UserID, "like", "canvas", int64(like.CanvasID), fmt.Sprintf("like:%d:%d", like.CanvasID, like.UserID), nil); err != nil {
+		return 0, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, err
@@ -333,78 +354,120 @@ func (r *CommunityRepo) CountLikes(ctx context.Context, canvasID canvasDomain.Ca
 // ---- Comment ----
 
 const (
-	communityInsertCommentSQL = `
-		INSERT INTO comments (canvas_id, author_id, content, created_at)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id`
-
-	communitySelectCommentsSQL = `
-		SELECT id, canvas_id, author_id, content, created_at
-		FROM comments
-		WHERE canvas_id = $1
-		ORDER BY created_at DESC
-		LIMIT $2 OFFSET $3`
-
-	communityCountCommentsSQL = `SELECT COUNT(*) FROM comments WHERE canvas_id = $1`
-
-	communityDeleteCommentSQL = `DELETE FROM comments WHERE id = $1`
+	communityInsertCommentSQL  = `INSERT INTO comments (canvas_id,author_id,parent_comment_id,content,moderation_status,created_at) VALUES ($1,$2,$3,$4,'visible',$5) RETURNING id`
+	communitySelectCommentsSQL = `WITH root_page AS (
+		SELECT c.id,c.created_at
+		FROM comments c
+		WHERE c.canvas_id=$1 AND c.parent_comment_id IS NULL
+		  AND ($2=0 OR NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$2 AND b.blocked_id=c.author_id) OR (b.blocker_id=c.author_id AND b.blocked_id=$2)))
+		ORDER BY c.created_at DESC,c.id DESC
+		LIMIT $3 OFFSET $4
+	)
+	SELECT c.id,c.canvas_id,c.author_id,c.parent_comment_id,c.content,c.deleted_at,c.moderation_status,c.created_at
+	FROM root_page rp
+	JOIN comments c ON c.id=rp.id OR c.parent_comment_id=rp.id
+	WHERE ($2=0 OR NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$2 AND b.blocked_id=c.author_id) OR (b.blocker_id=c.author_id AND b.blocked_id=$2)))
+	ORDER BY rp.created_at DESC,rp.id DESC,c.parent_comment_id NULLS FIRST,c.created_at ASC,c.id ASC`
+	communityCountCommentsSQL = `SELECT COUNT(*) FROM comments c WHERE c.canvas_id=$1 AND c.parent_comment_id IS NULL AND ($2=0 OR NOT EXISTS(SELECT 1 FROM blocks b WHERE (b.blocker_id=$2 AND b.blocked_id=c.author_id) OR (b.blocker_id=c.author_id AND b.blocked_id=$2)))`
+	communityDeleteCommentSQL = `DELETE FROM comments WHERE id=$1`
 )
 
-// SaveComment inserts a comment and sets its generated ID.
-func (r *CommunityRepo) SaveComment(ctx context.Context, comment *communityDomain.Comment) error {
-	var id int64
-	err := r.pool.QueryRow(ctx, communityInsertCommentSQL,
-		comment.CanvasID(),
-		comment.AuthorID(),
-		comment.Content(),
-		comment.CreatedAt(),
-	).Scan(&id)
+func (r *CommunityRepo) SaveComment(ctx context.Context, c *communityDomain.Comment) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var recipient identity.UserID
+	event := "comment"
+	if c.ParentID() != nil {
+		event = "reply"
+		err = tx.QueryRow(ctx, `SELECT author_id FROM comments WHERE id=$1 AND canvas_id=$2`, *c.ParentID(), c.CanvasID()).Scan(&recipient)
+	} else {
+		err = tx.QueryRow(ctx, `SELECT author_id FROM published_canvases WHERE canvas_id=$1 AND moderation_status='visible'`, c.CanvasID()).Scan(&recipient)
+	}
 	if err != nil {
 		return mapPgError(err)
 	}
-	comment.SetID(communityDomain.CommentID(id))
-	return nil
+	if blocked, err := interactionBlocked(ctx, tx, c.AuthorID(), recipient); err != nil {
+		return err
+	} else if blocked {
+		return shared.NewDomainError(shared.ErrForbidden, "interaction blocked")
+	}
+	var id int64
+	err = tx.QueryRow(ctx, communityInsertCommentSQL, c.CanvasID(), c.AuthorID(), c.ParentID(), c.Content(), c.CreatedAt()).Scan(&id)
+	if err != nil {
+		return mapPgError(err)
+	}
+	c.SetID(communityDomain.CommentID(id))
+	if _, err = tx.Exec(ctx, `UPDATE published_canvases SET comment_count=comment_count+1 WHERE canvas_id=$1`, c.CanvasID()); err != nil {
+		return err
+	}
+	if err = createNotificationTx(ctx, tx, recipient, c.AuthorID(), event, "comment", id, "", map[string]any{"canvas_id": c.CanvasID()}); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
-// FindComments returns paginated comments for a canvas.
-func (r *CommunityRepo) FindComments(ctx context.Context, canvasID canvasDomain.CanvasID, page communityDomain.Pagination) ([]*communityDomain.Comment, int64, error) {
+func (r *CommunityRepo) FindComment(ctx context.Context, id communityDomain.CommentID) (*communityDomain.Comment, error) {
+	var cid, aid int64
+	var parent *int64
+	var content, status string
+	var deleted *time.Time
+	var created time.Time
+	err := r.pool.QueryRow(ctx, `SELECT canvas_id,author_id,parent_comment_id,content,deleted_at,moderation_status,created_at FROM comments WHERE id=$1`, id).Scan(&cid, &aid, &parent, &content, &deleted, &status, &created)
+	if err != nil {
+		return nil, mapPgError(err)
+	}
+	var p *communityDomain.CommentID
+	if parent != nil {
+		v := communityDomain.CommentID(*parent)
+		p = &v
+	}
+	return communityDomain.ReconstituteCommentFull(id, canvasDomain.CanvasID(cid), identity.UserID(aid), p, content, deleted, status, created), nil
+}
+func (r *CommunityRepo) SoftDeleteComment(ctx context.Context, id communityDomain.CommentID, author identity.UserID) error {
+	tag, err := r.pool.Exec(ctx, `UPDATE comments SET deleted_at=COALESCE(deleted_at,now()),content='' WHERE id=$1 AND author_id=$2`, id, author)
+	if err != nil {
+		return mapPgError(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return shared.NewDomainError(shared.ErrNotFound, "comment not found or not owned by user")
+	}
+	return nil
+}
+func (r *CommunityRepo) FindComments(ctx context.Context, canvasID canvasDomain.CanvasID, viewerID identity.UserID, page communityDomain.Pagination) ([]*communityDomain.Comment, int64, error) {
 	var total int64
-	if err := r.pool.QueryRow(ctx, communityCountCommentsSQL, canvasID).Scan(&total); err != nil {
+	if err := r.pool.QueryRow(ctx, communityCountCommentsSQL, canvasID, viewerID).Scan(&total); err != nil {
 		return nil, 0, mapPgError(err)
 	}
 	if total == 0 {
-		return nil, 0, nil
+		return []*communityDomain.Comment{}, 0, nil
 	}
-
-	limit := page.Limit(20)
-	rows, err := r.pool.Query(ctx, communitySelectCommentsSQL, canvasID, limit, page.Offset())
+	rows, err := r.pool.Query(ctx, communitySelectCommentsSQL, canvasID, viewerID, page.Limit(20), page.Offset())
 	if err != nil {
 		return nil, 0, mapPgError(err)
 	}
 	defer rows.Close()
-
-	var comments []*communityDomain.Comment
+	out := []*communityDomain.Comment{}
 	for rows.Next() {
-		var id int64
-		var cID int64
-		var authorID int64
-		var content string
-		var createdAt time.Time
-		if err := rows.Scan(&id, &cID, &authorID, &content, &createdAt); err != nil {
+		var id, cid, aid int64
+		var parent *int64
+		var content, status string
+		var deleted *time.Time
+		var created time.Time
+		if err = rows.Scan(&id, &cid, &aid, &parent, &content, &deleted, &status, &created); err != nil {
 			return nil, 0, err
 		}
-		comments = append(comments, communityDomain.ReconstituteComment(
-			communityDomain.CommentID(id),
-			canvasDomain.CanvasID(cID),
-			identity.UserID(authorID),
-			content,
-			createdAt,
-		))
+		var p *communityDomain.CommentID
+		if parent != nil {
+			v := communityDomain.CommentID(*parent)
+			p = &v
+		}
+		out = append(out, communityDomain.ReconstituteCommentFull(communityDomain.CommentID(id), canvasDomain.CanvasID(cid), identity.UserID(aid), p, content, deleted, status, created))
 	}
-	return comments, total, rows.Err()
+	return out, total, rows.Err()
 }
-
-// DeleteComment removes a comment by ID.
 func (r *CommunityRepo) DeleteComment(ctx context.Context, id communityDomain.CommentID) error {
 	tag, err := r.pool.Exec(ctx, communityDeleteCommentSQL, id)
 	if err != nil {
@@ -441,24 +504,28 @@ func (r *CommunityRepo) SaveFork(ctx context.Context, fork *communityDomain.Fork
 		return err
 	}
 	defer tx.Rollback(ctx)
-
-	if _, err := tx.Exec(ctx, communityInsertForkSQL,
-		fork.OriginalCanvasID(), fork.NewCanvasID(), fork.UserID(), fork.CreatedAt(),
-	); err != nil {
+	var recipient identity.UserID
+	if err = tx.QueryRow(ctx, `SELECT author_id FROM published_canvases WHERE canvas_id=$1 AND moderation_status='visible'`, fork.OriginalCanvasID()).Scan(&recipient); err != nil {
 		return mapPgError(err)
 	}
-
-	tag, err := tx.Exec(ctx,
-		`UPDATE published_canvases SET fork_count = fork_count + 1 WHERE canvas_id = $1`,
-		fork.OriginalCanvasID(),
-	)
+	if blocked, err := interactionBlocked(ctx, tx, fork.UserID(), recipient); err != nil {
+		return err
+	} else if blocked {
+		return shared.NewDomainError(shared.ErrForbidden, "interaction blocked")
+	}
+	if _, err := tx.Exec(ctx, communityInsertForkSQL, fork.OriginalCanvasID(), fork.NewCanvasID(), fork.UserID(), fork.CreatedAt()); err != nil {
+		return mapPgError(err)
+	}
+	tag, err := tx.Exec(ctx, `UPDATE published_canvases SET fork_count=fork_count+1 WHERE canvas_id=$1`, fork.OriginalCanvasID())
 	if err != nil {
 		return mapPgError(err)
 	}
 	if tag.RowsAffected() == 0 {
 		return shared.NewDomainError(shared.ErrNotFound, "published canvas not found")
 	}
-
+	if err = createNotificationTx(ctx, tx, recipient, fork.UserID(), "fork", "canvas", int64(fork.OriginalCanvasID()), "", map[string]any{"fork_canvas_id": fork.NewCanvasID()}); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
 }
 
@@ -501,6 +568,12 @@ func (r *CommunityRepo) CountForks(ctx context.Context, canvasID canvasDomain.Ca
 	var count int64
 	err := r.pool.QueryRow(ctx, communityCountForksSQL, canvasID).Scan(&count)
 	return count, mapPgError(err)
+}
+
+func interactionBlocked(ctx context.Context, tx pgx.Tx, a, b identity.UserID) (bool, error) {
+	var blocked bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM blocks WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1))`, a, b).Scan(&blocked)
+	return blocked, err
 }
 
 // ---- Scanning helpers ----

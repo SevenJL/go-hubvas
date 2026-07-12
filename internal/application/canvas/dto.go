@@ -33,9 +33,11 @@ type CanvasDTO struct {
 
 // MemberDTO represents a member's permission assignment.
 type MemberDTO struct {
-	UserID   int64  `json:"user_id,string"`
-	Username string `json:"username"`
-	Role     string `json:"role"`
+	UserID      int64  `json:"user_id,string"`
+	Username    string `json:"username"`
+	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url"`
+	Role        string `json:"role"`
 }
 
 // AddMemberRequest adds a registered user to a canvas by username.

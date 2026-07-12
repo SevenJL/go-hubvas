@@ -3,82 +3,33 @@ package postgres
 import (
 	"context"
 	"errors"
-
-	"time"
-
+	"github.com/hubvas/internal/domain/identity"
+	"github.com/hubvas/internal/domain/shared"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
-
-	"github.com/hubvas/internal/domain/identity"
-	"github.com/hubvas/internal/domain/shared"
+	"time"
 )
 
-// UserRepo implements identity.UserRepository using PostgreSQL via pgx.
-//
-// It uses a pgxpool.Pool for connection pooling. All methods accept a context
-// for cancellation and tracing.
-type UserRepo struct {
-	pool *pgxpool.Pool
-}
+type UserRepo struct{ pool *pgxpool.Pool }
 
-// NewUserRepo creates a UserRepo backed by the given pgx connection pool.
-func NewUserRepo(pool *pgxpool.Pool) *UserRepo {
-	return &UserRepo{pool: pool}
-}
+func NewUserRepo(pool *pgxpool.Pool) *UserRepo { return &UserRepo{pool: pool} }
 
-// ---- Save ----
+const userColumns = `id, username, email, password_hash, display_name, bio, website, avatar_url, avatar_key, avatar_version, account_role, status, created_at, updated_at`
+const saveInsertSQL = `INSERT INTO users (username,email,password_hash,display_name,bio,website,avatar_url,avatar_key,avatar_version,account_role,status,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`
+const saveUpdateSQL = `UPDATE users SET email=$1,password_hash=$2,display_name=$3,bio=$4,website=$5,avatar_url=$6,avatar_key=$7,avatar_version=$8,account_role=$9,status=$10,updated_at=$11 WHERE id=$12`
 
-const (
-	saveInsertSQL = `
-		INSERT INTO users (username, email, password_hash, avatar_url, created_at)
-		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id
-	`
-
-	saveUpdateSQL = `
-		UPDATE users
-		SET username      = $1,
-		    email         = $2,
-		    password_hash = $3,
-		    avatar_url    = $4
-		WHERE id = $5
-	`
-)
-
-// Save persists a user. When the User's ID is 0 it performs an INSERT and
-// sets the generated ID on the aggregate. Otherwise it runs an UPDATE.
-func (r *UserRepo) Save(ctx context.Context, user *identity.User) error {
-	if user.ID() == 0 {
-		return r.insert(ctx, user)
+func (r *UserRepo) Save(ctx context.Context, u *identity.User) error {
+	if u.ID() == 0 {
+		var id int64
+		err := r.pool.QueryRow(ctx, saveInsertSQL, u.Username(), u.Email(), u.PasswordHash(), u.DisplayName(), u.Bio(), u.Website(), nullIfEmpty(u.AvatarURL()), nullIfEmpty(u.AvatarKey()), u.AvatarVersion(), u.AccountRole(), u.Status(), u.CreatedAt(), u.UpdatedAt()).Scan(&id)
+		if err != nil {
+			return mapPgError(err)
+		}
+		u.SetID(identity.UserID(id))
+		return nil
 	}
-	return r.update(ctx, user)
-}
-
-func (r *UserRepo) insert(ctx context.Context, user *identity.User) error {
-	var id int64
-	err := r.pool.QueryRow(ctx, saveInsertSQL,
-		user.Username(),
-		user.Email(),
-		user.PasswordHash(),
-		nullIfEmpty(user.AvatarURL()),
-		user.CreatedAt(),
-	).Scan(&id)
-	if err != nil {
-		return mapPgError(err)
-	}
-	user.SetID(identity.UserID(id))
-	return nil
-}
-
-func (r *UserRepo) update(ctx context.Context, user *identity.User) error {
-	tag, err := r.pool.Exec(ctx, saveUpdateSQL,
-		user.Username(),
-		user.Email(),
-		user.PasswordHash(),
-		nullIfEmpty(user.AvatarURL()),
-		user.ID(),
-	)
+	tag, err := r.pool.Exec(ctx, saveUpdateSQL, u.Email(), u.PasswordHash(), u.DisplayName(), u.Bio(), u.Website(), nullIfEmpty(u.AvatarURL()), nullIfEmpty(u.AvatarKey()), u.AvatarVersion(), u.AccountRole(), u.Status(), u.UpdatedAt(), u.ID())
 	if err != nil {
 		return mapPgError(err)
 	}
@@ -87,109 +38,27 @@ func (r *UserRepo) update(ctx context.Context, user *identity.User) error {
 	}
 	return nil
 }
-
-// ---- FindByID ----
-
-const findByIDSQL = `
-	SELECT id, username, email, password_hash, avatar_url, created_at
-	FROM users
-	WHERE id = $1
-`
-
-// FindByID retrieves a user by primary key. Returns ErrNotFound when the row
-// does not exist.
 func (r *UserRepo) FindByID(ctx context.Context, id identity.UserID) (*identity.User, error) {
-	var (
-		uid          int64
-		username     string
-		email        string
-		passwordHash string
-		avatarURL    *string
-		createdAt    time.Time
-	)
-
-	err := r.pool.QueryRow(ctx, findByIDSQL, id).Scan(
-		&uid, &username, &email, &passwordHash, &avatarURL, &createdAt,
-	)
-	if err != nil {
-		return nil, mapPgError(err)
-	}
-
-	return identity.ReconstituteUser(
-		identity.UserID(uid),
-		username,
-		email,
-		passwordHash,
-		derefString(avatarURL),
-		createdAt,
-	), nil
+	return r.findOneBy(ctx, `SELECT `+userColumns+` FROM users WHERE id=$1`, id)
 }
-
-// ---- FindByUsername ----
-
-const findByUsernameSQL = `
-	SELECT id, username, email, password_hash, avatar_url, created_at
-	FROM users
-	WHERE username = $1
-`
-
-// FindByUsername retrieves a user by exact username match.
-func (r *UserRepo) FindByUsername(ctx context.Context, username string) (*identity.User, error) {
-	return r.findOneBy(ctx, findByUsernameSQL, username)
+func (r *UserRepo) FindByUsername(ctx context.Context, v string) (*identity.User, error) {
+	return r.findOneBy(ctx, `SELECT `+userColumns+` FROM users WHERE LOWER(username)=LOWER($1)`, v)
 }
-
-// ---- FindByEmail ----
-
-const findByEmailSQL = `
-	SELECT id, username, email, password_hash, avatar_url, created_at
-	FROM users
-	WHERE email = $1
-`
-
-// FindByEmail retrieves a user by exact email match.
-func (r *UserRepo) FindByEmail(ctx context.Context, email string) (*identity.User, error) {
-	return r.findOneBy(ctx, findByEmailSQL, email)
+func (r *UserRepo) FindByEmail(ctx context.Context, v string) (*identity.User, error) {
+	return r.findOneBy(ctx, `SELECT `+userColumns+` FROM users WHERE LOWER(email)=LOWER($1)`, v)
 }
-
-// ---- ExistsByUsername ----
-
-const existsByUsernameSQL = `
-	SELECT EXISTS(SELECT 1 FROM users WHERE username = $1)
-`
-
-// ExistsByUsername returns true if the username is already registered.
-func (r *UserRepo) ExistsByUsername(ctx context.Context, username string) (bool, error) {
-	var exists bool
-	err := r.pool.QueryRow(ctx, existsByUsernameSQL, username).Scan(&exists)
-	if err != nil {
-		return false, mapPgError(err)
-	}
-	return exists, nil
+func (r *UserRepo) ExistsByUsername(ctx context.Context, v string) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(username)=LOWER($1))`, v).Scan(&ok)
+	return ok, mapPgError(err)
 }
-
-// ---- ExistsByEmail ----
-
-const existsByEmailSQL = `
-	SELECT EXISTS(SELECT 1 FROM users WHERE email = $1)
-`
-
-// ExistsByEmail returns true if the email is already registered.
-func (r *UserRepo) ExistsByEmail(ctx context.Context, email string) (bool, error) {
-	var exists bool
-	err := r.pool.QueryRow(ctx, existsByEmailSQL, email).Scan(&exists)
-	if err != nil {
-		return false, mapPgError(err)
-	}
-	return exists, nil
+func (r *UserRepo) ExistsByEmail(ctx context.Context, v string) (bool, error) {
+	var ok bool
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM users WHERE LOWER(email)=LOWER($1))`, v).Scan(&ok)
+	return ok, mapPgError(err)
 }
-
-// ---- Delete ----
-
-const deleteSQL = `DELETE FROM users WHERE id = $1`
-
-// Delete removes a user permanently.
 func (r *UserRepo) Delete(ctx context.Context, id identity.UserID) error {
-	tag, err := r.pool.Exec(ctx, deleteSQL, id)
+	tag, err := r.pool.Exec(ctx, `DELETE FROM users WHERE id=$1`, id)
 	if err != nil {
 		return mapPgError(err)
 	}
@@ -198,83 +67,52 @@ func (r *UserRepo) Delete(ctx context.Context, id identity.UserID) error {
 	}
 	return nil
 }
-
-// ---- helpers ----
-
-// findOneBy executes a single-row query that returns a user row.
-func (r *UserRepo) findOneBy(ctx context.Context, query string, arg any) (*identity.User, error) {
-	var (
-		uid          int64
-		username     string
-		email        string
-		passwordHash string
-		avatarURL    *string
-		createdAt    time.Time
-	)
-
-	err := r.pool.QueryRow(ctx, query, arg).Scan(
-		&uid, &username, &email, &passwordHash, &avatarURL, &createdAt,
-	)
+func (r *UserRepo) findOneBy(ctx context.Context, q string, arg any) (*identity.User, error) {
+	var id int64
+	var username, email, hash, display, bio, website, role, status string
+	var avatarURL, avatarKey *string
+	var version int64
+	var created, updated time.Time
+	err := r.pool.QueryRow(ctx, q, arg).Scan(&id, &username, &email, &hash, &display, &bio, &website, &avatarURL, &avatarKey, &version, &role, &status, &created, &updated)
 	if err != nil {
 		return nil, mapPgError(err)
 	}
-
-	return identity.ReconstituteUser(
-		identity.UserID(uid),
-		username,
-		email,
-		passwordHash,
-		derefString(avatarURL),
-		createdAt,
-	), nil
+	return identity.ReconstituteUserProfile(identity.UserID(id), username, email, hash, display, bio, website, derefString(avatarURL), derefString(avatarKey), version, role, status, created, updated), nil
 }
 
-// mapPgError translates pgx-level errors into domain errors so the domain
-// layer never sees driver-specific types.
 func mapPgError(err error) error {
 	if err == nil {
 		return nil
 	}
-
-	// No rows returned — map to domain "not found".
 	if errors.Is(err, pgx.ErrNoRows) {
 		return shared.NewDomainError(shared.ErrNotFound, "entity not found")
 	}
-
-	// Unique constraint violation (code 23505).
-	var pgErr *pgconn.PgError
-	if errors.As(err, &pgErr) {
-		switch pgErr.Code {
-		case "23505": // unique_violation
-			// Extract the constraint name to produce a helpful message.
+	var p *pgconn.PgError
+	if errors.As(err, &p) {
+		switch p.Code {
+		case "23505":
 			msg := "already exists"
-			switch pgErr.ConstraintName {
-			case "uq_users_username":
+			if p.ConstraintName == "uq_users_username" {
 				msg = "username is already taken"
-			case "uq_users_email":
+			}
+			if p.ConstraintName == "uq_users_email" {
 				msg = "email is already registered"
 			}
 			return shared.NewDomainError(shared.ErrAlreadyExists, msg)
-		case "23503": // foreign_key_violation
+		case "23503":
 			return shared.NewDomainError(shared.ErrInvalidArgument, "referenced entity does not exist")
-		case "23514": // check_violation
-			return shared.NewDomainError(shared.ErrInvalidArgument, "constraint violation: "+pgErr.Message)
+		case "23514":
+			return shared.NewDomainError(shared.ErrInvalidArgument, "constraint violation: "+p.Message)
 		}
 	}
-
-	// All other errors — connection failures, timeouts, etc.
 	return err
 }
-
-// nullIfEmpty returns a *string suitable for SQL NULL. An empty string yields nil.
 func nullIfEmpty(s string) *string {
 	if s == "" {
 		return nil
 	}
 	return &s
 }
-
-// derefString returns the dereferenced string, or "" for nil.
 func derefString(s *string) string {
 	if s == nil {
 		return ""

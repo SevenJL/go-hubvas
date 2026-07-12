@@ -17,14 +17,15 @@ type SearchQuery struct {
 	SortBy   SortBy
 	Page     int
 	PageSize int
+	ViewerID identity.UserID
 }
 
 // SortBy defines the sort order for the community feed.
 type SortBy int8
 
 const (
-	SortByLatest  SortBy = 0
-	SortByPopular SortBy = 1
+	SortByLatest   SortBy = 0
+	SortByPopular  SortBy = 1
 	SortByTrending SortBy = 2
 )
 

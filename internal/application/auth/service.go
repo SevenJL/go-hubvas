@@ -36,8 +36,8 @@ func NewAuthApplicationService(
 	passwordSvc PasswordService,
 ) *AuthApplicationService {
 	return &AuthApplicationService{
-		userRepo:   userRepo,
-		tokenSvc:   tokenSvc,
+		userRepo:    userRepo,
+		tokenSvc:    tokenSvc,
 		passwordSvc: passwordSvc,
 	}
 }
@@ -90,13 +90,7 @@ func (s *AuthApplicationService) Register(ctx context.Context, req RegisterReque
 	}
 
 	return &RegisterResponse{
-		User: &UserDTO{
-			ID:        int64(user.ID()),
-			Username:  user.Username(),
-			Email:     user.Email(),
-			AvatarURL: user.AvatarURL(),
-			CreatedAt: user.CreatedAt(),
-		},
+		User: userDTO(user),
 		Tokens: &TokenResponse{
 			AccessToken:  accessToken,
 			RefreshToken: refreshToken,
@@ -173,23 +167,15 @@ func (s *AuthApplicationService) UpdateProfile(ctx context.Context, userID ident
 		return nil, err
 	}
 
-	if req.AvatarURL != "" {
-		if err := user.SetAvatarURL(req.AvatarURL); err != nil {
-			return nil, err
-		}
+	if err := user.UpdateProfile(req.DisplayName, req.Bio, req.Website); err != nil {
+		return nil, err
 	}
 
 	if err := s.userRepo.Save(ctx, user); err != nil {
 		return nil, err
 	}
 
-	return &UserDTO{
-		ID:        int64(user.ID()),
-		Username:  user.Username(),
-		Email:     user.Email(),
-		AvatarURL: user.AvatarURL(),
-		CreatedAt: user.CreatedAt(),
-	}, nil
+	return userDTO(user), nil
 }
 
 // GetUser retrieves a user by ID.
@@ -198,11 +184,14 @@ func (s *AuthApplicationService) GetUser(ctx context.Context, userID identity.Us
 	if err != nil {
 		return nil, err
 	}
+	return userDTO(user), nil
+}
+
+func userDTO(user *identity.User) *UserDTO {
 	return &UserDTO{
-		ID:        int64(user.ID()),
-		Username:  user.Username(),
-		Email:     user.Email(),
-		AvatarURL: user.AvatarURL(),
-		CreatedAt: user.CreatedAt(),
-	}, nil
+		ID: int64(user.ID()), Username: user.Username(), Email: user.Email(),
+		DisplayName: user.DisplayName(), Bio: user.Bio(), Website: user.Website(),
+		AvatarURL: user.AvatarURL(), AccountRole: user.AccountRole(), Status: user.Status(),
+		CreatedAt: user.CreatedAt(), UpdatedAt: user.UpdatedAt(),
+	}
 }

@@ -296,14 +296,15 @@ make docker-down
 
 ## 测试与质量基线
 
-当前后端已覆盖领域模型、Canvas / Community 应用服务、配置加载、HTTP 路由、WebSocket Client / Hub / Room、快照编解码、MinIO 仓储和 Token Bucket 等测试。
+当前后端已覆盖领域模型、Canvas / Community / Social / Media 应用服务、HTTP 路由、WebSocket Client / Hub / Room、快照编解码、MinIO 仓储和 Token Bucket 等测试；前端已接入 Vitest 组件测试和 Playwright 社交流程测试。
 
 ```bash
 go test ./...
-cd frontend && npm run lint && npm run build
+go vet ./...
+cd frontend && npm run test && npm run test:e2e && npm run lint && npm run build
 ```
 
-尚待补充：完整 WebSocket 集成测试、浏览器 E2E 测试和 100 人协作压力测试。上述项目完成前，“百人级”表示架构目标，而不是已经完成正式压测认证。
+尚待补充：100 人协作压力测试。完成正式压测前，“百人级”仍表示架构目标，而不是已完成容量认证。
 
 ## 开发进度
 
@@ -318,10 +319,12 @@ cd frontend && npm run lint && npm run build
 | 社区发布、点赞、评论、Fork 与趋势排序 | ✅ 已完成 |
 | 前端中英文切换与统一交互反馈 | ✅ 已完成 |
 | Docker Compose 完整部署 | ✅ 已完成 |
-| WebSocket 集成测试、E2E、100 人压力测试 | ⏳ 待完善 |
+| WebSocket 通知集成与社交 E2E | ✅ 已完成 |
+| 100 人协作压力测试 | ⏳ 待完善 |
 | 导出与版本历史 | ⏳ 待实现 |
 | 协作聊天 | ⏳ 协议已预留，产品功能待实现 |
-| 收藏、关注与通知 | ⏳ 待实现 |
+| 关注、拉黑与站内通知 | ✅ 已完成 |
+| 收藏 | ⏳ 待实现 |
 | 模板市场 | ⏳ 待实现 |
 
 ## 开发约定
@@ -338,3 +341,76 @@ cd frontend && npm run lint && npm run build
 ## License
 
 MIT
+
+## 生产级社交基础能力
+
+当前版本已经将原有演示级社区功能扩展为可持久化、可审核、可恢复投递的社交基础版：
+
+- 个人资料：不可变 `username`、可编辑展示昵称/简介/网站、真实头像上传与删除。
+- 头像媒体：预签名 PUT 与 multipart 中转双链路；服务端按实际解码结果校验 JPEG/PNG/WebP、5 MB、4000 万像素上限和正方形裁剪，统一输出去元数据的 512×512 WebP。
+- 社交图谱：关注/取消关注、粉丝与关注列表、关注内容流、双向拉黑隔离。
+- 讨论：一级评论线程、回复、作者软删除、被删除/隐藏占位和拉黑过滤。
+- 治理：用户/画布/评论举报去重，管理员审核队列、暂停/恢复用户、隐藏/恢复评论和取消/恢复发布画布。
+- 通知：关注、点赞、评论、回复和 Fork 的持久化站内通知；数据库事务 outbox、NATS 重试分发和 `/ws/notifications?token=...` 实时推送。客户端重连后仍以 REST 列表和未读数为准补偿。
+- 可靠性：领域错误统一映射到 400/401/403/404/409/429；登录、头像、关注、评论、举报和管理员操作使用独立限流器。
+
+### 头像对象存储配置
+
+快照 bucket 与媒体 bucket 相互独立。MinIO 和兼容 S3 的部署至少需要配置：
+
+| 环境变量 | 默认值 | 说明 |
+|---|---:|---|
+| `STORAGE_ENDPOINT` | `localhost:9000` | MinIO/S3 endpoint |
+| `STORAGE_ACCESS_KEY` | 空 | 对象存储访问密钥 |
+| `STORAGE_SECRET_KEY` | 空 | 对象存储秘密密钥 |
+| `STORAGE_USE_SSL` | `false` | 是否使用 HTTPS |
+| `STORAGE_BUCKET` | `hubvas-snapshots` | 画布快照私有 bucket |
+| `STORAGE_MEDIA_BUCKET` | `hubvas-media` | 头像临时对象和成品 bucket |
+| `STORAGE_PUBLIC_BASE_URL` | 空 | 头像公开/CDN 基础地址；Compose 使用 `/media` |
+| `STORAGE_PRESIGN_TTL` | `15m` | 临时上传和预签名地址有效期 |
+| `STORAGE_AVATAR_MAX_BYTES` | `5242880` | 头像最大字节数 |
+
+临时对象位于 `tmp/avatars/{userID}/{uploadID}`，必须保持私有；成品位于 `avatars/{userID}/{version}.webp`，可通过 CDN 或只读代理公开。Compose 的 `minio-init` 已创建两个 bucket，仅对媒体 bucket 的 `avatars` 前缀开放下载，Nginx 为版本化成品返回 immutable 缓存头。
+
+### 管理员初始化
+
+所有迁移后的账号默认都是普通用户。部署人员需要在数据库中显式提升管理员：
+
+```sql
+UPDATE users
+SET account_role = 'admin', updated_at = now()
+WHERE username = 'admin_username';
+```
+
+不要通过前端请求或注册参数授予管理员角色。管理员接口位于 `/api/admin/*`，每次调用都会从数据库重新校验角色。
+
+### 主要新增接口
+
+- `PATCH /api/auth/profile`、`DELETE /api/auth/avatar`
+- `POST /api/media/avatars/presign`、`POST /api/media/avatars/complete`、`POST /api/media/avatars`
+- `GET /api/users/:username`、`GET /api/users/:username/canvases`
+- `POST|DELETE /api/users/:id/follow`、`GET /api/users/:id/followers|following`
+- `GET /api/community/following`
+- `GET /api/notifications`、`GET /api/notifications/unread-count`、通知已读接口
+- `POST|DELETE /api/users/:id/block`、`GET /api/blocks`
+- `POST /api/reports` 与 `/api/admin/reports`、用户/评论/画布审核接口
+- `GET /ws/notifications?token=...`
+
+### 测试与验收
+
+```bash
+# 后端单元/集成与静态检查
+go test ./...
+go vet ./...
+
+# 前端组件、浏览器流程、代码质量和生产构建
+cd frontend
+npm run test
+npm run test:e2e
+npm run lint
+npm run build
+```
+
+数据库迁移应在空 PostgreSQL 15+ 实例上按文件名顺序执行。对象存储验收需要同时验证预签名 PUT 和 multipart 两条链路最终都生成 WebP，并确认替换/删除头像后旧对象被清理。
+
+> 当前 HTTP 细粒度限流器为单实例内存 Token Bucket，并带空闲 key 回收，适合单副本或入口层已统一限流的部署。多 API 副本生产环境应在网关实施全局限流，或将该接口替换为 Redis/Lua 原子限流器，不能把单进程额度当作集群级额度。

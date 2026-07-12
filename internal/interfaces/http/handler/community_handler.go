@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 	appCommunity "github.com/hubvas/internal/application/community"
 	"github.com/hubvas/internal/domain/canvas"
+	communityDomain "github.com/hubvas/internal/domain/community"
 	"github.com/hubvas/internal/domain/identity"
 	"github.com/hubvas/internal/interfaces/http/middleware"
 	"github.com/hubvas/internal/interfaces/http/response"
@@ -29,7 +30,7 @@ func (h *CommunityHandler) Browse(c *gin.Context) {
 		return
 	}
 
-	feed, err := h.appSvc.Browse(c.Request.Context(), req)
+	feed, err := h.appSvc.Browse(c.Request.Context(), req, middleware.GetUserID(c))
 	if err != nil {
 		response.Error(c, 500, "browse_failed", err.Error())
 		return
@@ -136,7 +137,7 @@ func (h *CommunityHandler) GetComments(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 
-	comments, total, err := h.appSvc.GetComments(c.Request.Context(), canvas.CanvasID(id), page, pageSize)
+	comments, total, err := h.appSvc.GetComments(c.Request.Context(), canvas.CanvasID(id), middleware.GetUserID(c), page, pageSize)
 	if err != nil {
 		response.Error(c, 500, "get_comments_failed", err.Error())
 		return
@@ -147,4 +148,18 @@ func (h *CommunityHandler) GetComments(c *gin.Context) {
 		"page":      page,
 		"page_size": pageSize,
 	})
+}
+
+// DeleteComment handles DELETE /api/comments/:id for the comment author.
+func (h *CommunityHandler) DeleteComment(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil {
+		response.BadRequest(c, "invalid comment ID")
+		return
+	}
+	if err := h.appSvc.DeleteOwnComment(c.Request.Context(), communityDomain.CommentID(id), middleware.GetUserID(c)); err != nil {
+		socialError(c, err)
+		return
+	}
+	response.OK(c, gin.H{"deleted": true})
 }

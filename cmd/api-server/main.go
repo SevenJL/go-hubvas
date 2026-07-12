@@ -7,18 +7,24 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	miniogo "github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/hubvas/internal/application/auth"
 	appCanvas "github.com/hubvas/internal/application/canvas"
 	appCommunity "github.com/hubvas/internal/application/community"
+	appMedia "github.com/hubvas/internal/application/media"
+	appSocial "github.com/hubvas/internal/application/social"
 	"github.com/hubvas/internal/domain/shared"
 	infAuth "github.com/hubvas/internal/infrastructure/auth"
 	infnats "github.com/hubvas/internal/infrastructure/messaging/nats"
 	"github.com/hubvas/internal/infrastructure/persistence/postgres"
+	miniostore "github.com/hubvas/internal/infrastructure/storage/minio"
 	"github.com/hubvas/internal/interfaces/http"
 	"github.com/hubvas/internal/interfaces/http/handler"
 	"github.com/hubvas/internal/interfaces/http/middleware"
@@ -63,6 +69,8 @@ func main() {
 	userRepo := postgres.NewUserRepo(pool)
 	canvasRepo := postgres.NewCanvasRepo(pool)
 	communityRepo := postgres.NewCommunityRepo(pool)
+	socialRepo := postgres.NewSocialRepo(pool)
+	mediaRepo := postgres.NewMediaRepo(pool)
 
 	// ---- Infrastructure: Domain Services ----
 	jwtSvc := infAuth.NewJWTService(
@@ -77,8 +85,40 @@ func main() {
 	// ---- Snapshot repository (needed by canvas app service) ----
 	snapshotRepo := postgres.NewSnapshotStore(pool)
 
+	// ---- Infrastructure: public media object storage ----
+	minioClient, err := miniogo.New(cfg.Storage.Endpoint, &miniogo.Options{Creds: credentials.NewStaticV4(cfg.Storage.AccessKey, cfg.Storage.SecretKey, ""), Secure: cfg.Storage.UseSSL})
+	if err != nil {
+		log.Fatalf("failed to create media storage client: %v", err)
+	}
+	if exists, checkErr := minioClient.BucketExists(context.Background(), cfg.Storage.MediaBucket); checkErr != nil {
+		log.Printf("WARNING: cannot verify media bucket: %v", checkErr)
+	} else if !exists {
+		if makeErr := minioClient.MakeBucket(context.Background(), cfg.Storage.MediaBucket, miniogo.MakeBucketOptions{}); makeErr != nil {
+			log.Printf("WARNING: cannot create media bucket: %v", makeErr)
+		}
+	}
+	avatarStore := miniostore.NewAvatarStore(minioClient, cfg.Storage.MediaBucket, cfg.Storage.PublicBaseURL)
+
 	// ---- Application: Use Cases ----
 	authAppSvc := auth.NewAuthApplicationService(userRepo, jwtSvc, pwdSvc)
+	socialAppSvc := appSocial.NewService(socialRepo, userRepo)
+	mediaAppSvc := appMedia.NewService(mediaRepo, avatarStore, cfg.Storage.PresignTTL, cfg.Storage.AvatarMaxBytes)
+	mediaCleanupCtx, cancelMediaCleanup := context.WithCancel(context.Background())
+	defer cancelMediaCleanup()
+	go func() {
+		ticker := time.NewTicker(30 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-mediaCleanupCtx.Done():
+				return
+			case <-ticker.C:
+				if err := mediaAppSvc.CleanupExpired(mediaCleanupCtx, 100); err != nil {
+					log.Printf("[media] cleanup failed: %v", err)
+				}
+			}
+		}
+	}()
 
 	canvasAppSvc := appCanvas.NewCanvasApplicationService(
 		canvasRepo,
@@ -97,12 +137,14 @@ func main() {
 
 	// ---- Event Bus (optional — NATS for cross-service events) ----
 	var eventBus *infnats.EventBus
+	var natsConn *natsgo.Conn
 	if cfg.NATS.URL != "" {
-		nc, err := natsgo.Connect(cfg.NATS.URL)
+		nc, err := natsgo.Connect(cfg.NATS.URL, natsgo.Token(cfg.NATS.Token), natsgo.RetryOnFailedConnect(true), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(2*time.Second))
 		if err != nil {
 			log.Printf("WARNING: NATS unavailable — event bus in-process only: %v", err)
 			eventBus = infnats.NewEventBus(nil)
 		} else {
+			natsConn = nc
 			eventBus = infnats.NewEventBus(nc)
 			log.Println("Connected to NATS (event bus with cross-service delivery)")
 
@@ -123,6 +165,8 @@ func main() {
 	canvasHandler := handler.NewCanvasHandler(canvasAppSvc)
 	communityHandler := handler.NewCommunityHandler(communityAppSvc)
 	healthHandler := handler.NewHealthHandler(pool)
+	socialHandler := handler.NewSocialHandler(socialAppSvc)
+	mediaHandler := handler.NewMediaHandler(mediaAppSvc)
 
 	// Snapshot: domain interface → infrastructure impl → application service → handler
 	snapshotAppSvc := appCanvas.NewSnapshotApplicationService(canvasRepo, snapshotRepo)
@@ -139,10 +183,20 @@ func main() {
 		CommunityHandler: communityHandler,
 		HealthHandler:    healthHandler,
 		SnapshotHandler:  snapshotHandler,
+		SocialHandler:    socialHandler,
+		MediaHandler:     mediaHandler,
 		WSGateway:        nil, // WS server runs in separate process
 		TokenSvc:         jwtSvc,
 		RateLimiter:      rateLimiter,
+		UserLookup:       userRepo,
 	})
+
+	// ---- Reliable notification outbox dispatcher ----
+	dispatchCtx, cancelDispatch := context.WithCancel(context.Background())
+	defer cancelDispatch()
+	if natsConn != nil {
+		go infnats.NewNotificationDispatcher(pool, natsConn).Run(dispatchCtx)
+	}
 
 	// ---- Start Server ----
 	addr := fmt.Sprintf("%s:%d", cfg.Server.APIHost, cfg.Server.APIPort)

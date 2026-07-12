@@ -45,7 +45,7 @@ func Defaults() Config {
 		Database: DatabaseConfig{Host: "localhost", Port: 5432, User: "hubvas", DBName: "hubvas", SSLMode: "disable", MaxConns: 20},
 		Redis:    RedisConfig{Addr: "localhost:6379", DB: 0, PoolSize: 10},
 		NATS:     NATSConfig{URL: "nats://localhost:4222"},
-		Storage:  StorageConfig{Endpoint: "localhost:9000", Bucket: "hubvas-snapshots"},
+		Storage:  StorageConfig{Endpoint: "localhost:9000", Bucket: "hubvas-snapshots", MediaBucket: "hubvas-media", PresignTTL: 15 * time.Minute, AvatarMaxBytes: 5 * 1024 * 1024},
 		Auth:     AuthConfig{AccessTokenTTL: 15 * time.Minute, RefreshTokenTTL: 30 * 24 * time.Hour, AccessSecret: "dev-access-secret", RefreshSecret: "dev-refresh-secret", BcryptCost: 12},
 		WS:       WSConfig{IdleTimeout: 5 * time.Minute, GarbageInterval: time.Minute, SnapshotInterval: 30 * time.Second, MaxMessageSize: 512 * 1024, SendBufferSize: 256, InboundQueueSize: 1024},
 	}
@@ -57,7 +57,7 @@ func applyEnvironment(cfg *Config) error {
 		"DB_HOST": &cfg.Database.Host, "DB_USER": &cfg.Database.User, "DB_PASSWORD": &cfg.Database.Password, "DB_NAME": &cfg.Database.DBName, "DB_SSLMODE": &cfg.Database.SSLMode,
 		"REDIS_ADDR": &cfg.Redis.Addr, "REDIS_PASSWORD": &cfg.Redis.Password,
 		"NATS_URL": &cfg.NATS.URL, "NATS_TOKEN": &cfg.NATS.Token,
-		"STORAGE_ENDPOINT": &cfg.Storage.Endpoint, "STORAGE_ACCESS_KEY": &cfg.Storage.AccessKey, "STORAGE_SECRET_KEY": &cfg.Storage.SecretKey, "STORAGE_BUCKET": &cfg.Storage.Bucket,
+		"STORAGE_ENDPOINT": &cfg.Storage.Endpoint, "STORAGE_ACCESS_KEY": &cfg.Storage.AccessKey, "STORAGE_SECRET_KEY": &cfg.Storage.SecretKey, "STORAGE_BUCKET": &cfg.Storage.Bucket, "STORAGE_MEDIA_BUCKET": &cfg.Storage.MediaBucket, "STORAGE_PUBLIC_BASE_URL": &cfg.Storage.PublicBaseURL,
 		"JWT_ACCESS_SECRET": &cfg.Auth.AccessSecret, "JWT_REFRESH_SECRET": &cfg.Auth.RefreshSecret,
 	}
 	for key, target := range stringOverrides {
@@ -89,6 +89,13 @@ func applyEnvironment(cfg *Config) error {
 		}
 		cfg.Storage.UseSSL = parsed
 	}
+	if value, ok := os.LookupEnv("STORAGE_AVATAR_MAX_BYTES"); ok {
+		parsed, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid STORAGE_AVATAR_MAX_BYTES: %w", err)
+		}
+		cfg.Storage.AvatarMaxBytes = parsed
+	}
 	if value, ok := os.LookupEnv("WS_MAX_MESSAGE_SIZE"); ok {
 		parsed, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
@@ -100,7 +107,7 @@ func applyEnvironment(cfg *Config) error {
 	durations := map[string]*time.Duration{
 		"SERVER_READ_TIMEOUT": &cfg.Server.ReadTimeout, "SERVER_WRITE_TIMEOUT": &cfg.Server.WriteTimeout,
 		"JWT_ACCESS_TOKEN_TTL": &cfg.Auth.AccessTokenTTL, "JWT_REFRESH_TOKEN_TTL": &cfg.Auth.RefreshTokenTTL,
-		"WS_IDLE_TIMEOUT": &cfg.WS.IdleTimeout, "WS_GC_INTERVAL": &cfg.WS.GarbageInterval, "WS_SNAPSHOT_INTERVAL": &cfg.WS.SnapshotInterval,
+		"STORAGE_PRESIGN_TTL": &cfg.Storage.PresignTTL, "WS_IDLE_TIMEOUT": &cfg.WS.IdleTimeout, "WS_GC_INTERVAL": &cfg.WS.GarbageInterval, "WS_SNAPSHOT_INTERVAL": &cfg.WS.SnapshotInterval,
 	}
 	for key, target := range durations {
 		if value, ok := os.LookupEnv(key); ok {

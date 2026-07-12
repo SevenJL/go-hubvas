@@ -30,17 +30,24 @@ type TokenResponse struct {
 
 // UserDTO is the public representation of a user.
 type UserDTO struct {
-	ID        int64     `json:"id,string"`
-	Username  string    `json:"username"`
-	Email     string    `json:"email"`
-	AvatarURL string    `json:"avatar_url,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID          int64     `json:"id,string"`
+	Username    string    `json:"username"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"display_name"`
+	Bio         string    `json:"bio"`
+	Website     string    `json:"website"`
+	AvatarURL   string    `json:"avatar_url,omitempty"`
+	AccountRole string    `json:"account_role"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // UpdateProfileRequest is the input DTO for updating user profile.
 type UpdateProfileRequest struct {
-	Username  string `json:"username"`
-	AvatarURL string `json:"avatar_url"`
+	DisplayName string `json:"display_name" binding:"required,min=1,max=50"`
+	Bio         string `json:"bio" binding:"max=500"`
+	Website     string `json:"website" binding:"max=2048"`
 }
 
 // RegisterResponse is the combined response for registration (user + tokens auto-login).

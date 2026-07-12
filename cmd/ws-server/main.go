@@ -109,11 +109,13 @@ func main() {
 
 	// ---- NATS (optional — cross-node fan-out) ----
 	var pubsub *infnats.PubSub
+	var natsConn *natsgo.Conn
 	if cfg.NATS.URL != "" {
-		nc, err := natsgo.Connect(cfg.NATS.URL)
+		nc, err := natsgo.Connect(cfg.NATS.URL, natsgo.Token(cfg.NATS.Token), natsgo.RetryOnFailedConnect(true), natsgo.MaxReconnects(-1), natsgo.ReconnectWait(2*time.Second))
 		if err != nil {
 			log.Printf("WARNING: NATS unavailable — cross-node sync disabled: %v", err)
 		} else {
+			natsConn = nc
 			pubsub = infnats.NewPubSub(nc)
 			log.Println("Connected to NATS (cross-node fan-out enabled)")
 		}
@@ -157,7 +159,10 @@ func main() {
 	// ---- HTTP Server ----
 	mux := http.NewServeMux()
 
-	// WebSocket endpoint.
+	// WebSocket endpoints. Notifications are user-scoped and separate from canvas collaboration.
+	notificationGateway := ws.NewNotificationGateway(jwtSvc, userRepo, natsConn)
+	defer notificationGateway.Close()
+	mux.Handle("/ws/notifications", notificationGateway)
 	mux.Handle("/ws", gateway)
 
 	// Health check endpoint.

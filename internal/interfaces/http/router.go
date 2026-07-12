@@ -14,14 +14,23 @@ type RouterConfig struct {
 	CommunityHandler *handler.CommunityHandler
 	HealthHandler    *handler.HealthHandler
 	SnapshotHandler  *handler.SnapshotHandler
+	SocialHandler    *handler.SocialHandler
+	MediaHandler     *handler.MediaHandler
 	WSGateway        *ws.Gateway
 	TokenSvc         middleware.TokenValidator
 	RateLimiter      *middleware.RateLimiter
+	UserLookup       middleware.AccountLookup
 }
 
 // NewRouter creates and configures the Gin router with all routes.
 func NewRouter(cfg RouterConfig) *gin.Engine {
 	r := gin.New()
+	loginLimit := middleware.NewRateLimiter(0.2, 8)
+	uploadLimit := middleware.NewRateLimiter(0.1, 5)
+	followLimit := middleware.NewRateLimiter(0.5, 12)
+	commentLimit := middleware.NewRateLimiter(0.25, 8)
+	reportLimit := middleware.NewRateLimiter(0.05, 3)
+	adminLimit := middleware.NewRateLimiter(0.5, 10)
 
 	// Global middleware.
 	r.Use(middleware.Recovery())
@@ -36,13 +45,17 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 
 	auth := r.Group("/api/auth")
 	{
-		auth.POST("/register", cfg.AuthHandler.Register)
-		auth.POST("/login", cfg.AuthHandler.Login)
+		auth.POST("/register", loginLimit.KeyedMiddleware("register", false), cfg.AuthHandler.Register)
+		auth.POST("/login", loginLimit.KeyedMiddleware("login", false), cfg.AuthHandler.Login)
 		auth.POST("/refresh", cfg.AuthHandler.Refresh)
 	}
 
+	// Public user profiles and community read access.
+	r.GET("/api/users/:identifier", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.SocialHandler.Profile)
+	r.GET("/api/users/:identifier/canvases", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.SocialHandler.UserCanvases)
+
 	// Community — public read access.
-	r.GET("/api/community", cfg.CommunityHandler.Browse)
+	r.GET("/api/community", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.Browse)
 	r.GET("/api/community/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.GetPublished)
 
 	// Static canvas routes must be registered before the public /:id wildcard.
@@ -51,18 +64,43 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 
 	// Canvas detail — public (for published canvases).
 	r.GET("/api/canvases/:id", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CanvasHandler.Get)
-	r.GET("/api/canvases/:id/comments", cfg.CommunityHandler.GetComments)
+	r.GET("/api/canvases/:id/comments", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.GetComments)
 	r.GET("/api/canvases/:id/like-status", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.CommunityHandler.LikeStatus)
 	r.GET("/api/canvases/:id/snapshot", middleware.OptionalAuthMiddleware(cfg.TokenSvc), cfg.SnapshotHandler.Load)
 
 	// ---- Protected routes (JWT required) ----
 
 	api := r.Group("/api")
-	api.Use(middleware.AuthMiddleware(cfg.TokenSvc))
+	api.Use(middleware.AuthMiddleware(cfg.TokenSvc), middleware.ActiveAccountMiddleware(cfg.UserLookup))
 	{
-		// Auth
+		// Auth and profile media
 		api.GET("/auth/me", cfg.AuthHandler.Me)
 		api.PUT("/auth/profile", cfg.AuthHandler.UpdateProfile)
+		api.PATCH("/auth/profile", cfg.AuthHandler.UpdateProfile)
+		api.DELETE("/auth/avatar", cfg.MediaHandler.Remove)
+		api.POST("/media/avatars/presign", uploadLimit.KeyedMiddleware("avatar", true), cfg.MediaHandler.Presign)
+		api.POST("/media/avatars/complete", uploadLimit.KeyedMiddleware("avatar", true), cfg.MediaHandler.Complete)
+		api.POST("/media/avatars", uploadLimit.KeyedMiddleware("avatar", true), cfg.MediaHandler.Upload)
+
+		// Social graph, personalized feed, notifications and safety
+		api.POST("/users/:identifier/follow", followLimit.KeyedMiddleware("follow", true), cfg.SocialHandler.Follow)
+		api.DELETE("/users/:identifier/follow", followLimit.KeyedMiddleware("follow", true), cfg.SocialHandler.Unfollow)
+		api.GET("/users/:identifier/followers", cfg.SocialHandler.Followers)
+		api.GET("/users/:identifier/following", cfg.SocialHandler.Following)
+		api.POST("/users/:identifier/block", cfg.SocialHandler.Block)
+		api.DELETE("/users/:identifier/block", cfg.SocialHandler.Unblock)
+		api.GET("/blocks", cfg.SocialHandler.Blocks)
+		api.GET("/community/following", cfg.SocialHandler.FollowingFeed)
+		api.GET("/notifications", cfg.SocialHandler.Notifications)
+		api.GET("/notifications/unread-count", cfg.SocialHandler.UnreadCount)
+		api.PATCH("/notifications/:id/read", cfg.SocialHandler.MarkRead)
+		api.POST("/notifications/read-all", cfg.SocialHandler.MarkAllRead)
+		api.POST("/reports", reportLimit.KeyedMiddleware("report", true), cfg.SocialHandler.Report)
+		api.GET("/admin/reports", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.AdminReports)
+		api.PATCH("/admin/reports/:id", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.ReviewReport)
+		api.PATCH("/admin/users/:identifier/status", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.UserStatus)
+		api.PATCH("/admin/comments/:id/moderation", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.ModerateComment)
+		api.PATCH("/admin/canvases/:id/moderation", adminLimit.KeyedMiddleware("admin", true), cfg.SocialHandler.ModerateCanvas)
 
 		// Canvases (write operations)
 		api.POST("/canvases", cfg.CanvasHandler.Create)
@@ -78,7 +116,8 @@ func NewRouter(cfg RouterConfig) *gin.Engine {
 		// Community (write operations)
 		api.POST("/canvases/:id/like", cfg.CommunityHandler.Like)
 		api.DELETE("/canvases/:id/like", cfg.CommunityHandler.Unlike)
-		api.POST("/canvases/:id/comments", cfg.CommunityHandler.PostComment)
+		api.POST("/canvases/:id/comments", commentLimit.KeyedMiddleware("comment", true), cfg.CommunityHandler.PostComment)
+		api.DELETE("/comments/:id", cfg.CommunityHandler.DeleteComment)
 
 		// Snapshots (save requires auth)
 		api.PUT("/canvases/:id/snapshot", cfg.SnapshotHandler.Save)

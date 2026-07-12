@@ -38,3 +38,6 @@ go.work.sum
 frontend/node_modules
 frontend/dist
 .vite/
+# Browser test artifacts
+frontend/test-results/
+frontend/playwright-report/

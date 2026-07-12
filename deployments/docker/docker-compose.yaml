@@ -86,6 +86,9 @@ services:
       mc alias set local http://minio:9000 ${STORAGE_ACCESS_KEY:-minioadmin} ${STORAGE_SECRET_KEY:-minioadmin};
       mc mb --ignore-existing local/hubvas-snapshots;
       mc anonymous set private local/hubvas-snapshots;
+      mc mb --ignore-existing local/hubvas-media;
+      mc anonymous set private local/hubvas-media;
+      mc anonymous set download local/hubvas-media/avatars;
       echo 'MinIO bucket ready';
       exit 0;
       "
@@ -109,6 +112,9 @@ services:
       STORAGE_ACCESS_KEY: ${STORAGE_ACCESS_KEY:-minioadmin}
       STORAGE_SECRET_KEY: ${STORAGE_SECRET_KEY:-minioadmin}
       STORAGE_BUCKET: hubvas-snapshots
+      STORAGE_MEDIA_BUCKET: hubvas-media
+      STORAGE_PUBLIC_BASE_URL: /media
+      STORAGE_AVATAR_MAX_BYTES: "5242880"
     depends_on:
       postgres:
         condition: service_healthy

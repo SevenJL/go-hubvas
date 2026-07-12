@@ -46,7 +46,18 @@ func (r *communityRepositoryStub) CountLikes(context.Context, canvasDomain.Canva
 func (r *communityRepositoryStub) SaveComment(context.Context, *communityDomain.Comment) error {
 	return nil
 }
-func (r *communityRepositoryStub) FindComments(context.Context, canvasDomain.CanvasID, communityDomain.Pagination) ([]*communityDomain.Comment, int64, error) {
+func (r *communityRepositoryStub) FindComment(_ context.Context, id communityDomain.CommentID) (*communityDomain.Comment, error) {
+	for _, c := range r.comments {
+		if c.ID() == id {
+			return c, nil
+		}
+	}
+	return nil, nil
+}
+func (r *communityRepositoryStub) SoftDeleteComment(context.Context, communityDomain.CommentID, identity.UserID) error {
+	return nil
+}
+func (r *communityRepositoryStub) FindComments(context.Context, canvasDomain.CanvasID, identity.UserID, communityDomain.Pagination) ([]*communityDomain.Comment, int64, error) {
 	return r.comments, int64(len(r.comments)), nil
 }
 func (r *communityRepositoryStub) DeleteComment(context.Context, communityDomain.CommentID) error {
@@ -87,7 +98,7 @@ func TestBrowsePopulatesAuthorNamesAndCachesLookups(t *testing.T) {
 	}
 	svc := NewCommunityApplicationService(repo, nil, users, fixedIDGenerator{id: 1})
 
-	feed, err := svc.Browse(context.Background(), SearchRequest{})
+	feed, err := svc.Browse(context.Background(), SearchRequest{}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +123,7 @@ func TestGetCommentsPopulatesAuthorNames(t *testing.T) {
 	}
 	svc := NewCommunityApplicationService(repo, nil, users, fixedIDGenerator{id: 1})
 
-	comments, total, err := svc.GetComments(context.Background(), 7, 1, 20)
+	comments, total, err := svc.GetComments(context.Background(), 7, 0, 1, 20)
 	if err != nil {
 		t.Fatal(err)
 	}

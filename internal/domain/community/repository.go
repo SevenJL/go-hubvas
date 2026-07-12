@@ -23,7 +23,9 @@ type CommunityRepository interface {
 
 	// Comment operations
 	SaveComment(ctx context.Context, comment *Comment) error
-	FindComments(ctx context.Context, canvasID canvas.CanvasID, page Pagination) ([]*Comment, int64, error)
+	FindComment(ctx context.Context, id CommentID) (*Comment, error)
+	SoftDeleteComment(ctx context.Context, id CommentID, authorID identity.UserID) error
+	FindComments(ctx context.Context, canvasID canvas.CanvasID, viewerID identity.UserID, page Pagination) ([]*Comment, int64, error)
 	DeleteComment(ctx context.Context, id CommentID) error
 
 	// Fork operations

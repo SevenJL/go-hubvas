@@ -39,7 +39,7 @@ func NewCommunityApplicationService(
 }
 
 // Browse returns a paginated feed of published canvases.
-func (s *CommunityApplicationService) Browse(ctx context.Context, req SearchRequest) (*FeedResponse, error) {
+func (s *CommunityApplicationService) Browse(ctx context.Context, req SearchRequest, viewerID identity.UserID) (*FeedResponse, error) {
 	sortBy := communityDomain.SortByLatest
 	switch req.SortBy {
 	case "popular":
@@ -54,6 +54,7 @@ func (s *CommunityApplicationService) Browse(ctx context.Context, req SearchRequ
 		SortBy:   sortBy,
 		Page:     req.Page,
 		PageSize: req.PageSize,
+		ViewerID: viewerID,
 	}
 
 	if query.Page <= 0 {
@@ -69,23 +70,25 @@ func (s *CommunityApplicationService) Browse(ctx context.Context, req SearchRequ
 	}
 
 	items := make([]PublishedCanvasDTO, len(published))
-	authorNames := make(map[identity.UserID]string)
+	authors := make(map[identity.UserID]*identity.User)
 	for i, p := range published {
-		authorName, err := s.resolveAuthorName(ctx, p.AuthorID(), authorNames)
+		author, err := s.resolveAuthor(ctx, p.AuthorID(), authors)
 		if err != nil {
 			return nil, err
 		}
 		items[i] = PublishedCanvasDTO{
-			CanvasID:     int64(p.CanvasID()),
-			AuthorID:     int64(p.AuthorID()),
-			AuthorName:   authorName,
-			Title:        p.Title(),
-			SnapshotURL:  p.SnapshotURL(),
-			Tags:         p.Tags(),
-			LikeCount:    p.LikeCount(),
-			CommentCount: p.CommentCount(),
-			ForkCount:    p.ForkCount(),
-			PublishedAt:  p.PublishedAt().Unix(),
+			CanvasID:        int64(p.CanvasID()),
+			AuthorID:        int64(p.AuthorID()),
+			AuthorName:      author.DisplayName(),
+			AuthorUsername:  author.Username(),
+			AuthorAvatarURL: author.AvatarURL(),
+			Title:           p.Title(),
+			SnapshotURL:     p.SnapshotURL(),
+			Tags:            p.Tags(),
+			LikeCount:       p.LikeCount(),
+			CommentCount:    p.CommentCount(),
+			ForkCount:       p.ForkCount(),
+			PublishedAt:     p.PublishedAt().Unix(),
 		}
 	}
 
@@ -103,7 +106,7 @@ func (s *CommunityApplicationService) GetPublished(ctx context.Context, canvasID
 	if err != nil {
 		return nil, err
 	}
-	authorName, err := s.resolveAuthorName(ctx, p.AuthorID(), nil)
+	author, err := s.resolveAuthor(ctx, p.AuthorID(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +118,7 @@ func (s *CommunityApplicationService) GetPublished(ctx context.Context, canvasID
 		}
 	}
 	return &PublishedCanvasDTO{
-		CanvasID: int64(p.CanvasID()), AuthorID: int64(p.AuthorID()), AuthorName: authorName,
+		CanvasID: int64(p.CanvasID()), AuthorID: int64(p.AuthorID()), AuthorName: author.DisplayName(), AuthorUsername: author.Username(), AuthorAvatarURL: author.AvatarURL(),
 		Title: p.Title(), SnapshotURL: p.SnapshotURL(), Tags: p.Tags(), LikeCount: p.LikeCount(),
 		IsLiked: liked, CommentCount: p.CommentCount(), ForkCount: p.ForkCount(), PublishedAt: p.PublishedAt().Unix(),
 	}, nil
@@ -163,13 +166,8 @@ func (s *CommunityApplicationService) GetLikeStatus(ctx context.Context, canvasI
 	return &LikeStatusDTO{Liked: liked, LikeCount: count}, nil
 }
 
-// PostComment creates a new comment on a published canvas.
-func (s *CommunityApplicationService) PostComment(
-	ctx context.Context,
-	canvasID canvasDomain.CanvasID,
-	authorID identity.UserID,
-	req NewCommentRequest,
-) (*CommentDTO, error) {
+// PostComment creates a top-level comment or one-level reply.
+func (s *CommunityApplicationService) PostComment(ctx context.Context, canvasID canvasDomain.CanvasID, authorID identity.UserID, req NewCommentRequest) (*CommentDTO, error) {
 	canvas, err := s.canvasRepo.FindByID(ctx, canvasID)
 	if err != nil {
 		return nil, err
@@ -177,90 +175,85 @@ func (s *CommunityApplicationService) PostComment(
 	if !canvas.Visibility().IsPublished() {
 		return nil, shared.NewDomainError(shared.ErrForbidden, "canvas is not published")
 	}
-
-	comment, err := communityDomain.NewComment(
-		communityDomain.CommentID(s.idGen.NextID()),
-		canvasID,
-		authorID,
-		req.Content,
-	)
+	var parent *communityDomain.CommentID
+	if req.ParentCommentID != nil {
+		p, err := s.communityRepo.FindComment(ctx, communityDomain.CommentID(*req.ParentCommentID))
+		if err != nil {
+			return nil, err
+		}
+		if p.CanvasID() != canvasID {
+			return nil, shared.NewDomainError(shared.ErrInvalidArgument, "parent comment belongs to another canvas")
+		}
+		if p.DeletedAt() != nil || p.ModerationStatus() != "visible" {
+			return nil, shared.NewDomainError(shared.ErrConflict, "cannot reply to a deleted or hidden comment")
+		}
+		root := p.ID()
+		if p.ParentID() != nil {
+			root = *p.ParentID()
+		}
+		parent = &root
+	}
+	comment, err := communityDomain.NewReply(communityDomain.CommentID(s.idGen.NextID()), canvasID, authorID, parent, req.Content)
 	if err != nil {
 		return nil, err
 	}
-
-	authorName, err := s.resolveAuthorName(ctx, authorID, nil)
+	user, err := s.userLookup.FindByID(ctx, authorID)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.communityRepo.SaveComment(ctx, comment); err != nil {
+	if err = s.communityRepo.SaveComment(ctx, comment); err != nil {
 		return nil, err
 	}
-
-	// Update comment count.
-	published, err := s.communityRepo.FindPublishedByID(ctx, canvasID)
-	if err != nil {
-		return nil, err
-	}
-	published.IncrementComment()
-	if err := s.communityRepo.SavePublished(ctx, published); err != nil {
-		return nil, err
-	}
-
-	return &CommentDTO{
-		ID:         int64(comment.ID()),
-		CanvasID:   int64(comment.CanvasID()),
-		AuthorID:   int64(comment.AuthorID()),
-		AuthorName: authorName,
-		Content:    comment.Content(),
-		CreatedAt:  comment.CreatedAt().Unix(),
-	}, nil
+	return commentDTO(comment, user), nil
 }
-
-// GetComments retrieves comments for a published canvas.
-func (s *CommunityApplicationService) GetComments(
-	ctx context.Context,
-	canvasID canvasDomain.CanvasID,
-	page, pageSize int,
-) ([]CommentDTO, int64, error) {
-	pagination := communityDomain.Pagination{Page: page, PageSize: pageSize}
-	comments, total, err := s.communityRepo.FindComments(ctx, canvasID, pagination)
+func (s *CommunityApplicationService) DeleteOwnComment(ctx context.Context, id communityDomain.CommentID, author identity.UserID) error {
+	return s.communityRepo.SoftDeleteComment(ctx, id, author)
+}
+func (s *CommunityApplicationService) GetComments(ctx context.Context, canvasID canvasDomain.CanvasID, viewerID identity.UserID, page, pageSize int) ([]CommentDTO, int64, error) {
+	comments, total, err := s.communityRepo.FindComments(ctx, canvasID, viewerID, communityDomain.Pagination{Page: page, PageSize: pageSize})
 	if err != nil {
 		return nil, 0, err
 	}
-
-	dtos := make([]CommentDTO, len(comments))
-	authorNames := make(map[identity.UserID]string)
-	for i, c := range comments {
-		authorName, err := s.resolveAuthorName(ctx, c.AuthorID(), authorNames)
-		if err != nil {
-			return nil, 0, err
+	dtos := make([]CommentDTO, 0, len(comments))
+	cache := map[identity.UserID]*identity.User{}
+	for _, c := range comments {
+		u := cache[c.AuthorID()]
+		if u == nil {
+			u, err = s.userLookup.FindByID(ctx, c.AuthorID())
+			if err != nil {
+				return nil, 0, err
+			}
+			cache[c.AuthorID()] = u
 		}
-		dtos[i] = CommentDTO{
-			ID:         int64(c.ID()),
-			CanvasID:   int64(c.CanvasID()),
-			AuthorID:   int64(c.AuthorID()),
-			AuthorName: authorName,
-			Content:    c.Content(),
-			CreatedAt:  c.CreatedAt().Unix(),
-		}
+		dtos = append(dtos, *commentDTO(c, u))
 	}
 	return dtos, total, nil
 }
+func commentDTO(c *communityDomain.Comment, u *identity.User) *CommentDTO {
+	var parent *int64
+	if c.ParentID() != nil {
+		v := int64(*c.ParentID())
+		parent = &v
+	}
+	content := c.VisibleContent()
+	return &CommentDTO{ID: int64(c.ID()), CanvasID: int64(c.CanvasID()), AuthorID: int64(c.AuthorID()), AuthorName: u.DisplayName(), AuthorUsername: u.Username(), AuthorAvatarURL: u.AvatarURL(), ParentCommentID: parent, Content: content, Deleted: c.DeletedAt() != nil, ModerationStatus: c.ModerationStatus(), CreatedAt: c.CreatedAt().Unix()}
+}
 
-func (s *CommunityApplicationService) resolveAuthorName(ctx context.Context, userID identity.UserID, cache map[identity.UserID]string) (string, error) {
-	if name, ok := cache[userID]; ok {
-		return name, nil
+func (s *CommunityApplicationService) resolveAuthor(ctx context.Context, userID identity.UserID, cache map[identity.UserID]*identity.User) (*identity.User, error) {
+	if cache != nil {
+		if user, ok := cache[userID]; ok {
+			return user, nil
+		}
 	}
 	user, err := s.userLookup.FindByID(ctx, userID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	if user == nil {
-		return "", shared.NewDomainError(shared.ErrNotFound, "author not found")
+		return nil, shared.NewDomainError(shared.ErrNotFound, "author not found")
 	}
-	name := user.Username()
 	if cache != nil {
-		cache[userID] = name
+		cache[userID] = user
 	}
-	return name, nil
+	return user, nil
 }

@@ -1,154 +1,37 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Compass, Search, Users } from 'lucide-react';
 import { Layout } from '../components/layout/Layout';
+import { FeedCard } from '../components/community/FeedCard';
+import { Button, ErrorState, PageLoader } from '../components/ui';
 import { communityService } from '../services/community';
-import type { PublishedCanvas } from '../types';
-import { Heart, MessageCircle, GitFork, Search, TrendingUp, Clock } from 'lucide-react';
-import { Button, CanvasGridSkeleton, ErrorState } from '../components/ui';
+import { socialService } from '../services/social';
+import { useAuth } from '../store/AuthContext';
+import type { FeedResponse } from '../types';
 import { useI18n } from '../i18n';
 
 export function Community() {
-  const [items, setItems] = useState<PublishedCanvas[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [sortBy, setSortBy] = useState('latest');
-  const [loadError, setLoadError] = useState('');
-  const [keyword, setKeyword] = useState('');
-  const [query, setQuery] = useState('');
-  const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const navigate = useNavigate();
+  const { user } = useAuth();
   const { t } = useI18n();
-
-  const load = useCallback(async (p = 1) => {
-    setLoading(true);
-    setLoadError('');
-    try {
-      const res = await communityService.browse({ sort_by: sortBy, q: query || undefined, page: p });
-      setItems(res.items);
-      setTotal(res.total_count);
-      setPage(p);
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : t('The community feed is temporarily unavailable.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [sortBy, query, t]);
-
-  useEffect(() => { void load(1); }, [load]);
-
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    setQuery(keyword.trim());
-  };
-
-  const totalPages = Math.ceil(total / 20);
-
-  return (
-    <Layout>
-      <div className="max-w-5xl mx-auto px-4 py-8">
-        <h1 className="text-2xl font-bold text-gray-900 mb-6">{t('Community')}</h1>
-
-        {/* Search & sort */}
-        <div className="flex flex-col sm:flex-row gap-3 mb-6">
-          <form onSubmit={handleSearch} className="flex-1 flex gap-2">
-            <div className="relative flex-1">
-              <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-              <input
-                type="text"
-                className="input-field pl-9"
-                placeholder={t('Search canvases...')}
-                value={keyword}
-                onChange={e => setKeyword(e.target.value)}
-              />
-            </div>
-            <Button type="submit">{t('Search')}</Button>
-          </form>
-
-          <div className="flex gap-1">
-            <button
-              onClick={() => setSortBy('latest')}
-              className={`px-3 py-2 rounded-lg text-sm flex items-center gap-1.5 transition-colors ${
-                sortBy === 'latest' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'
-              }`}
-            >
-              <Clock size={14} /> {t('Latest')}
-            </button>
-            <button
-              onClick={() => setSortBy('popular')}
-              className={`px-3 py-2 rounded-lg text-sm flex items-center gap-1.5 transition-colors ${
-                sortBy === 'popular' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'
-              }`}
-            >
-              <Heart size={14} /> {t('Popular')}
-            </button>
-            <button
-              onClick={() => setSortBy('trending')}
-              className={`px-3 py-2 rounded-lg text-sm flex items-center gap-1.5 transition-colors ${
-                sortBy === 'trending' ? 'bg-indigo-100 text-indigo-700' : 'text-gray-500 hover:bg-gray-100'
-              }`}
-            >
-              <TrendingUp size={14} /> {t('Trending')}
-            </button>
-          </div>
-        </div>
-
-        {loading ? (
-          <CanvasGridSkeleton />
-        ) : loadError ? (
-          <ErrorState title={t('Could not load the community')} message={loadError} onRetry={() => void load(page)} />
-        ) : items.length === 0 ? (
-          <div className="text-center py-12 card text-gray-400">{t('No published canvases yet')}</div>
-        ) : (
-          <>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {items.map(c => (
-                <div key={c.canvas_id} className="card overflow-hidden group cursor-pointer"
-                     onClick={() => navigate(`/canvas/${c.canvas_id}`)}>
-                  <div className="aspect-video bg-gradient-to-br from-indigo-100 to-purple-100 flex items-center justify-center">
-                    <span className="text-3xl">🎨</span>
-                  </div>
-                  <div className="p-4">
-                    <h3 className="font-semibold text-gray-900 truncate">{c.title}</h3>
-                    <p className="text-xs text-gray-500 mt-0.5">{t('by {author}', { author: c.author_name || t('User #{id}', { id: c.author_id }) })}</p>
-                    <div className="flex items-center gap-4 mt-3 text-sm text-gray-500">
-                      <span className="flex items-center gap-1">
-                        <Heart size={14} className="text-red-400" /> {c.like_count}
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <MessageCircle size={14} /> {c.comment_count}
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <GitFork size={14} /> {c.fork_count}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* Pagination */}
-            {totalPages > 1 && (
-              <div className="flex justify-center items-center gap-2 mt-8">
-                <Button
-                  variant="secondary"
-                  onClick={() => void load(page - 1)}
-                  disabled={page <= 1}
-                >
-                  {t('Previous')}
-                </Button>
-                <span className="text-sm text-gray-500">{t('Page {page} of {total}', { page, total: totalPages })}</span>
-                <Button
-                  variant="secondary"
-                  onClick={() => void load(page + 1)}
-                  disabled={page >= totalPages}
-                >
-                  {t('Next')}
-                </Button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-    </Layout>
-  );
+  const [tab, setTab] = useState<'discover' | 'following'>('discover');
+  const [query, setQuery] = useState('');
+  const [sort, setSort] = useState('latest');
+  const [page, setPage] = useState(1);
+  const [feed, setFeed] = useState<FeedResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try { setFeed(tab === 'following' ? await socialService.followingFeed(page) : await communityService.browse({ q: query, sort_by: sort, page, page_size: 12 })); }
+    catch (loadError) { setError(loadError instanceof Error ? loadError.message : t('Could not load feed')); }
+    finally { setLoading(false); }
+  }, [tab, page, query, sort, t]);
+  useEffect(() => {
+    if (tab === 'following' && !user) { setLoading(false); setFeed(null); return; }
+    void load();
+  }, [load, tab, user]);
+  return <Layout><main className="mx-auto max-w-7xl px-4 py-10">
+    <div className="flex flex-col justify-between gap-5 md:flex-row md:items-end"><div><p className="text-sm font-semibold text-indigo-600">{t('COMMUNITY')}</p><h1 className="mt-1 text-4xl font-bold tracking-tight text-slate-950">{t('Ideas made visible.')}</h1><p className="mt-2 text-slate-500">{t('Discover public canvases or catch up with creators you follow.')}</p></div><div className="flex rounded-xl bg-slate-100 p-1"><button onClick={() => { setTab('discover'); setPage(1); }} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium ${tab === 'discover' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500'}`}><Compass size={16} />{t('Discover')}</button><button onClick={() => { setTab('following'); setPage(1); }} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium ${tab === 'following' ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500'}`}><Users size={16} />{t('Following')}</button></div></div>
+    {tab === 'discover' && <div className="mt-8 flex gap-3"><div className="relative flex-1"><Search className="absolute left-4 top-3.5 text-slate-400" size={18} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder={t('Search canvases')} className="w-full rounded-xl border border-slate-300 py-3 pl-11 pr-4 outline-none focus:border-indigo-500" /></div><select value={sort} onChange={event => setSort(event.target.value)} className="rounded-xl border border-slate-300 bg-white px-4"><option value="latest">{t('Latest')}</option><option value="popular">{t('Popular')}</option><option value="trending">{t('Trending')}</option></select></div>}
+    <div className="mt-8">{tab === 'following' && !user ? <div className="rounded-3xl bg-slate-950 p-12 text-center text-white"><Users className="mx-auto mb-4" /><h2 className="text-2xl font-bold">{t('Your following feed starts after sign in')}</h2><p className="mt-2 text-slate-400">{t('Follow creators and see their newest public work here.')}</p><Button className="mt-6" onClick={() => location.assign('/login')}>{t('Sign in')}</Button></div> : loading ? <PageLoader label={t('Loading community...')} /> : error ? <ErrorState title={t('Could not load community')} message={error} onRetry={() => void load()} /> : feed?.items.length ? <><div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">{feed.items.map(item => <FeedCard key={item.canvas_id} item={item} />)}</div><div className="mt-8 flex justify-center gap-3"><Button variant="secondary" disabled={page <= 1} onClick={() => setPage(current => current - 1)}>{t('Previous')}</Button><span className="px-3 py-2 text-sm text-slate-500">{t('Page {page}', { page })}</span><Button variant="secondary" disabled={page * 12 >= (feed.total_count || 0)} onClick={() => setPage(current => current + 1)}>{t('Next')}</Button></div></> : <div className="rounded-2xl border border-dashed border-slate-300 p-14 text-center text-slate-500">{t('Nothing here yet.')}</div>}</div>
+  </main></Layout>;
 }

@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -81,4 +82,29 @@ func GetUserID(c *gin.Context) identity.UserID {
 		return 0
 	}
 	return val.(identity.UserID)
+}
+
+// AccountLookup resolves account status for authorization guards.
+type AccountLookup interface {
+	FindByID(ctx context.Context, id identity.UserID) (*identity.User, error)
+}
+
+// ActiveAccountMiddleware prevents suspended or deleted accounts from using write APIs.
+func ActiveAccountMiddleware(users AccountLookup) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if users == nil {
+			c.Next()
+			return
+		}
+		user, err := users.FindByID(c.Request.Context(), GetUserID(c))
+		if err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"code": http.StatusUnauthorized, "message": "account no longer exists"})
+			return
+		}
+		if !user.IsActive() {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"code": http.StatusForbidden, "message": "account is suspended"})
+			return
+		}
+		c.Next()
+	}
 }

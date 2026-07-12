@@ -2,6 +2,7 @@ package identity
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -9,27 +10,21 @@ import (
 	"github.com/hubvas/internal/domain/shared"
 )
 
-// UserID is the strongly-typed identifier for a user.
 type UserID int64
 
-// User is the aggregate root for the Identity bounded context.
-// It enforces invariants around registration, login, and profile updates.
 type User struct {
 	shared.AggregateRoot
-	id           UserID
-	username     string
-	email        string
-	passwordHash string
-	avatarURL    string
-	createdAt    time.Time
+	id                            UserID
+	username, email, passwordHash string
+	displayName, bio, website     string
+	avatarURL, avatarKey          string
+	avatarVersion                 int64
+	accountRole, status           string
+	createdAt, updatedAt          time.Time
 }
 
-// NewUser is the factory for creating a new User aggregate.
-// It validates business rules before construction.
 func NewUser(id UserID, username, email, passwordHash string) (*User, error) {
-	username = strings.TrimSpace(username)
-	email = strings.TrimSpace(email)
-
+	username, email = strings.TrimSpace(username), strings.TrimSpace(email)
 	if username == "" || utf8.RuneCountInString(username) < 3 || utf8.RuneCountInString(username) > 50 {
 		return nil, shared.NewDomainError(shared.ErrInvalidArgument, "username must be 3-50 characters")
 	}
@@ -39,77 +34,92 @@ func NewUser(id UserID, username, email, passwordHash string) (*User, error) {
 	if passwordHash == "" {
 		return nil, shared.NewDomainError(shared.ErrInvalidArgument, "password hash must not be empty")
 	}
-
-	u := &User{
-		id:           id,
-		username:     username,
-		email:        email,
-		passwordHash: passwordHash,
-		createdAt:    time.Now(),
-	}
-
-	u.AddEvent(UserRegisteredEvent{
-		BaseEvent: shared.NewBaseEvent("UserRegistered"),
-		UserID:    id,
-		Username:  username,
-		Email:     email,
-	})
-
+	now := time.Now()
+	u := &User{id: id, username: username, email: email, passwordHash: passwordHash, displayName: username, accountRole: "user", status: "active", createdAt: now, updatedAt: now}
+	u.AddEvent(UserRegisteredEvent{BaseEvent: shared.NewBaseEvent("UserRegistered"), UserID: id, Username: username, Email: email})
 	return u, nil
 }
 
-// ReconstituteUser rebuilds a User from persistence. Only the repository should call this.
+// ReconstituteUser is retained for test and adapter compatibility.
 func ReconstituteUser(id UserID, username, email, passwordHash, avatarURL string, createdAt time.Time) *User {
-	return &User{
-		id:           id,
-		username:     username,
-		email:        email,
-		passwordHash: passwordHash,
-		avatarURL:    avatarURL,
-		createdAt:    createdAt,
-	}
+	return ReconstituteUserProfile(id, username, email, passwordHash, username, "", "", avatarURL, "", 0, "user", "active", createdAt, createdAt)
 }
-
-// SetID assigns the database-generated ID after INSERT.
-// It is idempotent: once set, subsequent calls have no effect.
-// Only the repository layer should call this.
+func ReconstituteUserProfile(id UserID, username, email, passwordHash, displayName, bio, website, avatarURL, avatarKey string, avatarVersion int64, role, status string, createdAt, updatedAt time.Time) *User {
+	if displayName == "" {
+		displayName = username
+	}
+	return &User{id: id, username: username, email: email, passwordHash: passwordHash, displayName: displayName, bio: bio, website: website, avatarURL: avatarURL, avatarKey: avatarKey, avatarVersion: avatarVersion, accountRole: role, status: status, createdAt: createdAt, updatedAt: updatedAt}
+}
 func (u *User) SetID(id UserID) {
 	if u.id == 0 {
 		u.id = id
 	}
 }
-
-// ---- Accessors ----
-
-func (u *User) ID() UserID            { return u.id }
-func (u *User) Username() string      { return u.username }
-func (u *User) Email() string         { return u.email }
-func (u *User) PasswordHash() string  { return u.passwordHash }
-func (u *User) AvatarURL() string     { return u.avatarURL }
-func (u *User) CreatedAt() time.Time  { return u.createdAt }
-
-// ---- Mutations (with invariants) ----
-
-// ChangePassword updates the password hash. Old hash verification is the caller's responsibility.
-func (u *User) ChangePassword(newHash string) error {
-	if newHash == "" {
+func (u *User) ID() UserID           { return u.id }
+func (u *User) Username() string     { return u.username }
+func (u *User) Email() string        { return u.email }
+func (u *User) PasswordHash() string { return u.passwordHash }
+func (u *User) DisplayName() string  { return u.displayName }
+func (u *User) Bio() string          { return u.bio }
+func (u *User) Website() string      { return u.website }
+func (u *User) AvatarURL() string    { return u.avatarURL }
+func (u *User) AvatarKey() string    { return u.avatarKey }
+func (u *User) AvatarVersion() int64 { return u.avatarVersion }
+func (u *User) AccountRole() string  { return u.accountRole }
+func (u *User) Status() string       { return u.status }
+func (u *User) IsAdmin() bool        { return u.accountRole == "admin" }
+func (u *User) IsActive() bool       { return u.status == "active" }
+func (u *User) CreatedAt() time.Time { return u.createdAt }
+func (u *User) UpdatedAt() time.Time { return u.updatedAt }
+func (u *User) ChangePassword(v string) error {
+	if v == "" {
 		return shared.NewDomainError(shared.ErrInvalidArgument, "password hash must not be empty")
 	}
-	u.passwordHash = newHash
+	u.passwordHash = v
+	u.updatedAt = time.Now()
 	return nil
 }
-
-// SetAvatarURL sets the user's avatar URL.
-func (u *User) SetAvatarURL(url string) error {
-	if url != "" && !strings.HasPrefix(url, "http") {
+func (u *User) SetAvatarURL(v string) error {
+	if v != "" && !strings.HasPrefix(v, "http") {
 		return shared.NewDomainError(shared.ErrInvalidArgument, "avatar URL must be valid")
 	}
-	u.avatarURL = url
+	u.avatarURL = v
+	u.updatedAt = time.Now()
 	return nil
 }
-
-// VerifyPassword delegates to the hashing service. The domain model does not
-// import crypto libraries — the application layer passes the hash for comparison.
+func (u *User) SetAvatarObject(key string, version int64, publicURL string) {
+	u.avatarKey = key
+	u.avatarVersion = version
+	u.avatarURL = publicURL
+	u.updatedAt = time.Now()
+}
+func (u *User) ClearAvatar() {
+	u.avatarKey = ""
+	u.avatarVersion = 0
+	u.avatarURL = ""
+	u.updatedAt = time.Now()
+}
+func (u *User) UpdateProfile(displayName, bio, website string) error {
+	displayName, bio, website = strings.TrimSpace(displayName), strings.TrimSpace(bio), strings.TrimSpace(website)
+	if n := utf8.RuneCountInString(displayName); n < 1 || n > 50 {
+		return shared.NewDomainError(shared.ErrInvalidArgument, "display name must be 1-50 characters")
+	}
+	if utf8.RuneCountInString(bio) > 500 {
+		return shared.NewDomainError(shared.ErrInvalidArgument, "bio must be at most 500 characters")
+	}
+	if len(website) > 2048 {
+		return shared.NewDomainError(shared.ErrInvalidArgument, "website is too long")
+	}
+	if website != "" {
+		parsed, err := url.ParseRequestURI(website)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+			return shared.NewDomainError(shared.ErrInvalidArgument, "website must be an http or https URL")
+		}
+	}
+	u.displayName, u.bio, u.website = displayName, bio, website
+	u.updatedAt = time.Now()
+	return nil
+}
 func (u *User) VerifyPassword(hash string) error {
 	if u.passwordHash != hash {
 		return errors.New("password mismatch")

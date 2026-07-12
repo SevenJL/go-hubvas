@@ -79,3 +79,16 @@
     animation-iteration-count: 1 !important;
   }
 }
+
+.nav-link {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  border-radius: .75rem;
+  padding: .55rem .7rem;
+  color: #64748b;
+  font-size: .875rem;
+  transition: color .15s ease, background .15s ease;
+}
+.nav-link:hover { color: #0f172a; background: #f1f5f9; }

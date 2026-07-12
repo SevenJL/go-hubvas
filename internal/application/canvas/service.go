@@ -125,15 +125,17 @@ func (s *CanvasApplicationService) ListMembers(ctx context.Context, canvasID can
 	}
 	members := make([]MemberDTO, 0, len(c.Members()))
 	for _, member := range c.Members() {
-		username := ""
+		dto := MemberDTO{UserID: int64(member.ID), Role: member.Role.String()}
 		if s.userRepo != nil {
 			user, lookupErr := s.userRepo.FindByID(ctx, member.ID)
 			if lookupErr != nil {
 				return nil, lookupErr
 			}
-			username = user.Username()
+			dto.Username = user.Username()
+			dto.DisplayName = user.DisplayName()
+			dto.AvatarURL = user.AvatarURL()
 		}
-		members = append(members, MemberDTO{UserID: int64(member.ID), Username: username, Role: member.Role.String()})
+		members = append(members, dto)
 	}
 	return members, nil
 }
@@ -159,7 +161,7 @@ func (s *CanvasApplicationService) AddMember(ctx context.Context, canvasID canva
 	if err := s.canvasRepo.Save(ctx, c); err != nil {
 		return nil, err
 	}
-	return &MemberDTO{UserID: int64(user.ID()), Username: user.Username(), Role: role.String()}, nil
+	return &MemberDTO{UserID: int64(user.ID()), Username: user.Username(), DisplayName: user.DisplayName(), AvatarURL: user.AvatarURL(), Role: role.String()}, nil
 }
 
 // UpdateMemberRole changes an existing non-owner member's role.
@@ -182,15 +184,17 @@ func (s *CanvasApplicationService) UpdateMemberRole(ctx context.Context, canvasI
 	if err := s.canvasRepo.Save(ctx, c); err != nil {
 		return nil, err
 	}
-	username := ""
+	dto := &MemberDTO{UserID: int64(memberID), Role: role.String()}
 	if s.userRepo != nil {
 		user, lookupErr := s.userRepo.FindByID(ctx, memberID)
 		if lookupErr != nil {
 			return nil, lookupErr
 		}
-		username = user.Username()
+		dto.Username = user.Username()
+		dto.DisplayName = user.DisplayName()
+		dto.AvatarURL = user.AvatarURL()
 	}
-	return &MemberDTO{UserID: int64(memberID), Username: username, Role: role.String()}, nil
+	return dto, nil
 }
 
 // RemoveMember revokes a non-owner member's canvas access.
