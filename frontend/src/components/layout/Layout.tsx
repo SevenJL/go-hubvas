@@ -59,7 +59,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <div className="min-h-screen bg-slate-50">
-      <header className="sticky top-0 z-50 border-b border-slate-200/80 bg-white/90 backdrop-blur">
+      <header className={`sticky top-0 border-b border-slate-200/80 bg-white/90 backdrop-blur ${accountMenuOpen ? 'z-[10000]' : 'z-50'}`}>
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-2 px-2.5 sm:px-4">
           <Link to="/" className="flex min-w-0 shrink-0 items-center gap-2 text-lg font-bold text-slate-950">
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-indigo-600 text-white">
@@ -129,13 +129,14 @@ export function Layout({ children }: { children: React.ReactNode }) {
                   <div
                     role="menu"
                     aria-label={t('Profile')}
-                    className="absolute right-0 top-[calc(100%+0.65rem)] w-[min(18rem,calc(100vw-1rem))] overflow-hidden rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl shadow-slate-900/10"
+                    className="absolute right-0 top-[calc(100%+0.4rem)] z-[10010] w-[min(15.5rem,calc(100vw-0.75rem))] overflow-hidden rounded-xl border border-slate-200 bg-white p-1 shadow-2xl shadow-slate-900/15 sm:top-[calc(100%+0.65rem)] sm:w-72 sm:rounded-2xl sm:p-1.5"
                   >
-                    <div className="flex items-center gap-3 border-b border-slate-100 px-3 py-3">
-                      <Avatar size="md" name={accountName} src={user.avatar_url} />
+                    <div className="flex items-center gap-2 border-b border-slate-100 px-2.5 py-2 sm:gap-3 sm:px-3 sm:py-3">
+                      <span className="sm:hidden"><Avatar size="sm" name={accountName} src={user.avatar_url} /></span>
+                      <span className="hidden sm:block"><Avatar size="md" name={accountName} src={user.avatar_url} /></span>
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-slate-900">{accountName}</p>
-                        <p className="truncate text-xs text-slate-500">{user.email}</p>
+                        <p className="truncate text-[13px] font-semibold text-slate-900 sm:text-sm">{accountName}</p>
+                        <p className="truncate text-[11px] text-slate-500 sm:text-xs">{user.email}</p>
                       </div>
                     </div>
 
@@ -143,7 +144,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                       <Link
                         to="/profile"
                         role="menuitem"
-                        className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-950"
+                        className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-950 sm:gap-3 sm:rounded-xl sm:px-3 sm:py-2.5 sm:text-sm"
                       >
                         <UserRound size={17} className="text-slate-400" />
                         {t('Profile settings')}
@@ -152,7 +153,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                         <Link
                           to="/admin"
                           role="menuitem"
-                          className="flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-950 sm:hidden"
+                          className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-[13px] font-medium text-slate-700 transition-colors hover:bg-slate-100 hover:text-slate-950 sm:hidden"
                         >
                           <Shield size={17} className="text-slate-400" />
                           {t('Moderation')}
@@ -165,7 +166,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
                         type="button"
                         role="menuitem"
                         onClick={signOut}
-                        className="flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-rose-600 transition-colors hover:bg-rose-50"
+                        className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] font-semibold text-rose-600 transition-colors hover:bg-rose-50 sm:gap-3 sm:rounded-xl sm:px-3 sm:py-2.5 sm:text-sm"
                       >
                         <LogOut size={17} />
                         {t('Sign out')}
