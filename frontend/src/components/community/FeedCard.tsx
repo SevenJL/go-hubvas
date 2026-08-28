@@ -3,7 +3,35 @@ import { GitFork, Heart, MessageCircle } from 'lucide-react';
 import { Avatar } from '../ui/Avatar';
 import { CanvasThumbnail } from '../canvas/CanvasThumbnail';
 import type { PublishedCanvas } from '../../types';
-export function FeedCard({item}:{item:PublishedCanvas}){const navigate=useNavigate();return <article className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg">
- <button className="block w-full text-left" onClick={()=>navigate(`/canvas/${item.canvas_id}`)}><CanvasThumbnail canvasId={item.canvas_id}/></button>
- <div className="p-5"><button onClick={()=>item.author_username&&navigate(`/users/${item.author_username}`)} className="flex items-center gap-3 text-left"><Avatar name={item.author_name||item.author_username} src={item.author_avatar_url}/><span><strong className="block text-sm text-slate-900">{item.author_name||item.author_username}</strong><span className="text-xs text-slate-400">@{item.author_username}</span></span></button>
- <button onClick={()=>navigate(`/canvas/${item.canvas_id}`)} className="mt-4 block w-full text-left"><h3 className="truncate text-lg font-semibold text-slate-950 group-hover:text-indigo-600">{item.title}</h3>{item.tags?.length>0&&<div className="mt-3 flex flex-wrap gap-1.5">{item.tags.map(tag=><span key={tag} className="rounded-full bg-slate-100 px-2 py-1 text-[11px] text-slate-600">#{tag}</span>)}</div>}<div className="mt-4 flex gap-5 text-sm text-slate-500"><span className="flex items-center gap-1.5"><Heart size={15}/>{item.like_count}</span><span className="flex items-center gap-1.5"><MessageCircle size={15}/>{item.comment_count}</span><span className="flex items-center gap-1.5"><GitFork size={15}/>{item.fork_count}</span></div></button></div></article>}
+
+export function FeedCard({ item, index = 0 }: { item: PublishedCanvas; index?: number }) {
+  const navigate = useNavigate();
+  const authorName = item.author_name || item.author_username;
+  const score = item.like_count > 999 ? '999+' : item.like_count;
+
+  return (
+    <article className="community-card" style={{ animationDelay: `${index * 60}ms` }}>
+      <div className="community-card-preview">
+        <span className="community-card-score" aria-label={`${item.like_count} likes`}>{score}</span>
+        <button type="button" onClick={() => navigate(`/canvas/${item.canvas_id}`)} aria-label={`Open ${item.title}`}>
+          <CanvasThumbnail canvasId={item.canvas_id} />
+        </button>
+      </div>
+      <div className="community-card-body">
+        <button type="button" onClick={() => item.author_username && navigate(`/users/${item.author_username}`)} className="community-card-author">
+          <Avatar name={authorName} src={item.author_avatar_url} />
+          <span><strong>{authorName}</strong><small>@{item.author_username}</small></span>
+        </button>
+        <button type="button" onClick={() => navigate(`/canvas/${item.canvas_id}`)} className="community-card-title">
+          <h2>{item.title}</h2>
+          {item.tags?.length > 0 && <div className="community-tags">{item.tags.map(tag => <span key={tag} className="community-tag">#{tag}</span>)}</div>}
+          <div className="community-stats">
+            <span><Heart size={14} fill={item.is_liked ? 'currentColor' : 'none'} />{item.like_count}</span>
+            <span><MessageCircle size={14} />{item.comment_count}</span>
+            <span><GitFork size={14} />{item.fork_count}</span>
+          </div>
+        </button>
+      </div>
+    </article>
+  );
+}
