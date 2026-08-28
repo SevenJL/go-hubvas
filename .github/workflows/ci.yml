@@ -1,14 +1,10 @@
 name: CI
 
-# Run checks and publish container images to GHCR.
-# Deployment is intentionally managed outside this workflow.
+# Run the full CI/CD pipeline only after a GitHub Release is published.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-  workflow_dispatch:
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -26,7 +22,7 @@ env:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # 1. Lint & test (every push / PR).
+  # 1. Lint & test for the published release.
   # ---------------------------------------------------------------------------
   test:
     name: Lint & Test
@@ -46,6 +42,8 @@ jobs:
           --health-retries 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - uses: actions/setup-go@v5
         with:
@@ -102,12 +100,11 @@ jobs:
         run: npm run test:e2e
 
   # ---------------------------------------------------------------------------
-  # 2. Build & push images to GHCR (main only). Three images in parallel.
+  # 2. Build & push images to GHCR (release published only). Three images in parallel.
   # ---------------------------------------------------------------------------
   build-and-push:
     name: Build & Push ${{ matrix.service }}
     needs: test
-    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -118,6 +115,8 @@ jobs:
           - { service: web, dockerfile: deployments/docker/Dockerfile.web }
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
 
       - uses: docker/setup-buildx-action@v3
 
@@ -135,7 +134,170 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           tags: |
-            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:latest
             ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+
+  # ---------------------------------------------------------------------------
+  # 3. Deploy the immutable images to the production server (release published only).
+  #
+  # The server keeps its production secrets in deployments/docker/.env. CI only
+  # uploads the Compose definition and selects the image with IMAGE_TAG, so no
+  # production credentials are stored in the repository or copied from CI.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy Docker Compose
+    needs:
+      - test
+      - build-and-push
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+      DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+      DEPLOY_PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/go-hubvas' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Configure SSH
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          test -n "$DEPLOY_HOST" || { echo "DEPLOY_HOST is not configured" >&2; exit 1; }
+          test -n "$DEPLOY_USER" || { echo "DEPLOY_USER is not configured" >&2; exit 1; }
+          test -n "$DEPLOY_SSH_KEY" || { echo "DEPLOY_SSH_KEY is not configured" >&2; exit 1; }
+          test -n "$DEPLOY_KNOWN_HOSTS" || { echo "DEPLOY_KNOWN_HOSTS is not configured" >&2; exit 1; }
+
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/go-hubvas-deploy"
+          chmod 600 "$HOME/.ssh/go-hubvas-deploy"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/known_hosts"
+
+      - name: Check the deployment host
+        run: |
+          set -Eeuo pipefail
+          ssh \
+            -i "$HOME/.ssh/go-hubvas-deploy" \
+            -p "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "docker version --format '{{.Server.Version}}' && docker compose version"
+
+      - name: Upload production Compose definition
+        run: |
+          set -Eeuo pipefail
+          ssh \
+            -i "$HOME/.ssh/go-hubvas-deploy" \
+            -p "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "mkdir -p '$DEPLOY_PATH/deployments/docker'"
+
+          scp \
+            -i "$HOME/.ssh/go-hubvas-deploy" \
+            -P "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            deployments/docker/docker-compose.yaml \
+            "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_PATH/deployments/docker/docker-compose.yaml"
+
+      - name: Log in the deployment host to GHCR (when images are private)
+        env:
+          GHCR_DEPLOY_USERNAME: ${{ secrets.GHCR_DEPLOY_USERNAME }}
+          GHCR_DEPLOY_TOKEN: ${{ secrets.GHCR_DEPLOY_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          if [ -z "$GHCR_DEPLOY_USERNAME" ] || [ -z "$GHCR_DEPLOY_TOKEN" ]; then
+            echo "GHCR deploy credentials are not configured; the GHCR packages must be public."
+            exit 0
+          fi
+
+          printf '%s' "$GHCR_DEPLOY_TOKEN" | ssh \
+            -i "$HOME/.ssh/go-hubvas-deploy" \
+            -p "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "docker login ghcr.io --username '$GHCR_DEPLOY_USERNAME' --password-stdin"
+
+      - name: Pull and start the release
+        env:
+          RELEASE_TAG: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          # The SHA is safe to pass as an environment value; secrets remain on
+          # the server and are read only by Compose from its local .env file.
+          printf -v remote_path '%q' "$DEPLOY_PATH"
+          printf -v release_tag '%q' "$RELEASE_TAG"
+
+          ssh \
+            -i "$HOME/.ssh/go-hubvas-deploy" \
+            -p "$DEPLOY_PORT" \
+            -o BatchMode=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            "DEPLOY_PATH=$remote_path IMAGE_TAG=$release_tag bash -s" <<'REMOTE_SCRIPT'
+          set -Eeuo pipefail
+
+          compose_file="$DEPLOY_PATH/deployments/docker/docker-compose.yaml"
+          env_file="$DEPLOY_PATH/deployments/docker/.env"
+
+          test -f "$compose_file" || { echo "Missing $compose_file" >&2; exit 1; }
+          test -f "$env_file" || {
+            echo "Missing $env_file. Copy .env.example to .env on the server and fill production secrets first." >&2
+            exit 1
+          }
+
+          cd "$DEPLOY_PATH"
+
+          if grep -q '^IMAGE_TAG=' "$env_file"; then
+            sed -i "s/^IMAGE_TAG=.*/IMAGE_TAG=$IMAGE_TAG/" "$env_file"
+          else
+            printf '\nIMAGE_TAG=%s\n' "$IMAGE_TAG" >> "$env_file"
+          fi
+
+          docker compose \
+            --env-file "$env_file" \
+            -f "$compose_file" \
+            config >/dev/null
+
+          docker compose \
+            --env-file "$env_file" \
+            -f "$compose_file" \
+            pull
+
+          docker compose \
+            --env-file "$env_file" \
+            -f "$compose_file" \
+            up -d --wait --wait-timeout 180
+
+          docker compose \
+            --env-file "$env_file" \
+            -f "$compose_file" \
+            ps
+
+          web_port="$(docker compose \
+            --env-file "$env_file" \
+            -f "$compose_file" \
+            port web 80 | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -n 1)"
+          test -n "$web_port" || { echo "Could not determine the web port" >&2; exit 1; }
+
+          curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-all-errors \
+            "http://127.0.0.1:$web_port/health"
+          curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-all-errors \
+            "http://127.0.0.1:$web_port/ready"
+          REMOTE_SCRIPT

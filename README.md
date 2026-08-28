@@ -155,6 +155,39 @@ make docker-down
 
 开发模式固定读取 `deployments/docker/.env.dev`。生产部署应复制 `deployments/docker/.env.example` 为受保护的 `.env`，填写不可变 `IMAGE_TAG`、数据库/Redis/NATS/对象存储凭据以及至少 32 字符的 `JWT_ACCESS_SECRET`、`METRICS_TOKEN`。生产配置缺失或仍使用开发凭据时，API 与 WS 会直接拒绝启动。
 
+### 方式一.1：GitHub Actions 自动部署到服务器
+
+`.github/workflows/ci.yml` 已配置为：只有在 GitHub Release 状态变为 `published` 后才运行，代码普通 `push` 不会触发部署。工作流会检出该 Release 的 tag，先执行测试，再构建并推送 API、WS、Web 三个不可变 SHA 标签镜像到 GHCR，然后通过 SSH 将生产 Compose 文件上传到服务器，执行 `docker compose pull`、数据库迁移和 `docker compose up -d --wait`。生产数据库、Redis、NATS、MinIO 数据卷会保留，不会因发布新镜像而删除。
+
+服务器首次部署（以 `/opt/go-hubvas` 为例）：
+
+```bash
+sudo mkdir -p /opt/go-hubvas
+sudo chown -R "$USER":"$USER" /opt/go-hubvas
+cd /opt/go-hubvas
+git clone https://github.com/SevenJL/go-hubvas.git .
+cp deployments/docker/.env.example deployments/docker/.env
+chmod 600 deployments/docker/.env
+# 编辑 .env，替换所有生产凭据和 IMAGE_TAG
+```
+
+服务器需要安装 Docker Engine 和 Docker Compose v2，并确保 SSH 用户能够执行 Docker（加入 `docker` 用户组或使用 root）。如果 GHCR 镜像为私有包，还需要在 GitHub Actions Secrets 中添加一个具备 `read:packages` 权限的 Token。
+
+在 GitHub 仓库的 `Settings → Secrets and variables → Actions` 添加：
+
+| Secret | 说明 |
+|---|---|
+| `DEPLOY_HOST` | 服务器 IP 或域名 |
+| `DEPLOY_USER` | SSH 用户名 |
+| `DEPLOY_PORT` | SSH 端口，通常为 `22` |
+| `DEPLOY_SSH_KEY` | 对应服务器 `authorized_keys` 的私钥 |
+| `DEPLOY_KNOWN_HOSTS` | 服务器 SSH 主机指纹，可在可信环境执行 `ssh-keyscan -H <host>` 后核对 |
+| `DEPLOY_PATH` | 项目目录，默认 `/opt/go-hubvas` |
+| `GHCR_DEPLOY_USERNAME` | 仅私有 GHCR 包需要 |
+| `GHCR_DEPLOY_TOKEN` | 仅私有 GHCR 包需要，至少具备 `read:packages` |
+
+不要把生产 `.env`、数据库密码、JWT 密钥或 SSH 私钥提交到 Git。每次 GitHub Release 发布后，工作流会将服务器 `.env` 中的 `IMAGE_TAG` 更新为该 Release tag 对应提交的 SHA，并等待 Web、API、WS 服务健康后才报告部署成功。
+
 ### 方式二：本地开发
 
 前置条件：Go 1.25.1、Node.js、npm、PostgreSQL 15+。Redis、NATS 和 MinIO 在单实例开发时可以暂时不启用，但对应的分布式 Presence、对象锁、跨节点同步和持久快照能力会降级。
