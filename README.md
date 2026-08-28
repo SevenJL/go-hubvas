@@ -157,7 +157,7 @@ make docker-down
 
 ### 方式一.1：GitHub Actions 自动部署到服务器
 
-`.github/workflows/ci.yml` 已配置为：只有在 GitHub Release 状态变为 `published` 后才运行，代码普通 `push` 不会触发部署。工作流会检出该 Release 的 tag，先执行测试，再构建并推送 API、WS、Web 三个不可变 SHA 标签镜像到 GHCR，然后通过 SSH 将生产 Compose 文件上传到服务器，执行 `docker compose pull`、数据库迁移和 `docker compose up -d --wait`。生产数据库、Redis、NATS、MinIO 数据卷会保留，不会因发布新镜像而删除。
+`.github/workflows/ci.yml` 已配置为：只有在 GitHub Release 状态变为 `published` 后才运行，代码普通 `push` 不会触发部署。工作流会检出该 Release 的 tag，先执行测试，再构建并推送 API、WS、Web 三个 Release tag 和 Git SHA 标签镜像到 GHCR，然后通过 SSH 将生产 Compose 文件上传到服务器，执行 `docker compose pull`、数据库迁移和 `docker compose up -d --wait`。生产数据库、Redis、NATS、MinIO 数据卷会保留，不会因发布新镜像而删除。
 
 服务器首次部署（以 `/opt/go-hubvas` 为例）：
 
@@ -186,7 +186,7 @@ chmod 600 deployments/docker/.env
 | `GHCR_DEPLOY_USERNAME` | 仅私有 GHCR 包需要 |
 | `GHCR_DEPLOY_TOKEN` | 仅私有 GHCR 包需要，至少具备 `read:packages` |
 
-不要把生产 `.env`、数据库密码、JWT 密钥或 SSH 私钥提交到 Git。每次 GitHub Release 发布后，工作流会将服务器 `.env` 中的 `IMAGE_TAG` 更新为该 Release tag 对应提交的 SHA，并等待 Web、API、WS 服务健康后才报告部署成功。
+不要把生产 `.env`、数据库密码、JWT 密钥或 SSH 私钥提交到 Git。每次 GitHub Release 发布后，工作流会将服务器 `.env` 中的 `IMAGE_TAG` 更新为 Release tag（例如 `0.0.1`），并等待 Web、API、WS 服务健康后才报告部署成功；同时镜像也会保留对应提交的 SHA 标签。
 
 ### 方式二：本地开发
 

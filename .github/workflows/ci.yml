@@ -134,6 +134,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           push: true
           tags: |
+            ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ github.event.release.tag_name }}
             ${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -235,11 +236,11 @@ jobs:
 
       - name: Pull and start the release
         env:
-          RELEASE_TAG: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -Eeuo pipefail
-          # The SHA is safe to pass as an environment value; secrets remain on
-          # the server and are read only by Compose from its local .env file.
+          # The release tag is published alongside the immutable SHA tag. Secrets
+          # remain on the server and are read only by Compose from its local .env.
           printf -v remote_path '%q' "$DEPLOY_PATH"
           printf -v release_tag '%q' "$RELEASE_TAG"
 
